@@ -3,6 +3,10 @@ import secrets
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 
+from fastapi import Header, HTTPException
+
+# pyrefly: ignore[missing-import]
+from app.config import settings
 # ============= PASSWORD HASHING (Simple & Reliable) =============
 
 def hash_password(password: str) -> str:
@@ -62,3 +66,19 @@ def decode_access_token(token: str):
         return {"username": username, "user_id": user_id}
     except JWTError:
         return None
+def verify_device_key(x_device_key: str = Header(None)):
+    """Verify the API key sent by the IoT device."""
+
+    if not settings.device_api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Device API key is not configured"
+        )
+
+    if x_device_key != settings.device_api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid device key"
+        )
+
+    return True

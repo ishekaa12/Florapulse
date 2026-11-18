@@ -1,28 +1,60 @@
 """
-AquaSmart Analytics — Streamlit version
-Recreates the standalone analytics page (no sidebar): background image,
-Analytics Overview stats, Predictive Soil Moisture Trend, Weather Analysis,
-Water vs. Energy Efficiency, and Cost Analysis.
+FloraPulse Analytics — Streamlit version
+Same layout as the original design: background image, Analytics Overview,
+Predictive Soil Moisture Trend, Weather Analysis, Water vs. Energy Efficiency
+and Cost Analysis. Moisture, rain and pump data come from the backend; the
+two cards with no real data source are labelled "(sample data)".
 
 Cards are rendered as self-contained HTML (own CSS + own copy of Plotly)
 via st.components.v1.html, so the white background / green border always
 look the same regardless of which Streamlit version renders the page.
-
-Run with:
-    pip install -r requirements.txt
-    streamlit run app.py
-
-Keep background.png next to this file (or in an assets/static/images folder).
 """
 
 import base64
 import json
 from pathlib import Path
 
+import pandas as pd
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Analytics", page_icon="🌿", layout="wide")
+
+BACKEND_URL = "http://localhost:8000"
+TS_IS_UTC = False        # sensor readings are stored with datetime.now() (local time)
+WATER_THRESHOLD = 35
+LOCAL_TZ = "Asia/Kolkata"  # used only to convert pump events, which the backend stores in UTC
+LOOKBACK_HOURS = 168       # 7 days
+
+# ---------------------------------------------------------------------------
+# Auth guard
+# ---------------------------------------------------------------------------
+st.session_state.setdefault("auth_token", None)
+if not st.session_state.get("auth_token"):
+    st.warning("You must log in to view analytics.")
+    if st.button("Go to Login", key="analytics_login"):
+        st.switch_page("pages/2_Login.py")
+    st.stop()
+
+
+def api(path, **kw):
+    """GET helper. Returns (json, error)."""
+    try:
+        r = requests.get(
+            f"{BACKEND_URL}{path}", timeout=10,
+            headers={"Authorization": f"Bearer {st.session_state.auth_token}"}, **kw,
+        )
+    except requests.exceptions.RequestException:
+        return None, "Cannot reach backend. Is it running?"
+    if r.status_code == 401:
+        st.session_state.auth_token = None
+        st.switch_page("pages/2_Login.py")
+        st.stop()
+    if r.status_code >= 400:
+        return None, f"Backend error {r.status_code}"
+    return r.json(), None
+
 
 # ---------------------------------------------------------------------------
 # Background image
@@ -159,18 +191,72 @@ def render_overview_card(stats: list, height: int = 190) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Load real data
+# ---------------------------------------------------------------------------
+def clean(series) -> list:
+    return [None if pd.isna(v) else round(float(v), 1) for v in series]
+
+
+def labels(idx) -> list:
+    return [t.strftime("%a %H:%M") for t in idx]
+
+
+plants_resp, err = api("/api/plants/my-plants")
+if err:
+    st.error(err)
+    st.stop()
+plants = (plants_resp or {}).get("plants", [])
+if not plants:
+    st.info("🌱 No plants yet. Add a plant and start a sensor to see analytics.")
+    st.stop()
+
+frames = {}      # plant name -> DataFrame indexed by timestamp
+pump_times = []  # all pump ON timestamps (local time)
+no_data = []
+for p in plants:
+    hist, _ = api("/api/sensor-data/history",
+                  params={"plant_id": p["id"], "hours": LOOKBACK_HOURS, "limit": 5000})
+    rows = (hist or {}).get("readings", [])
+    if rows:
+        df = pd.DataFrame(rows)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=TS_IS_UTC)
+        if TS_IS_UTC:
+            df["timestamp"] = df["timestamp"].dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+        for c in ("moisture", "temperature", "humidity"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df["rain_detected"] = df["rain_detected"].fillna(False).astype(int)
+        frames[p["name"]] = df.sort_values("timestamp").set_index("timestamp")
+    else:
+        no_data.append(p["name"])
+
+    act, _ = api(f"/api/plants/{p['id']}/activity", params={"hours": LOOKBACK_HOURS})
+    
+    for ev in (act or {}).get("pump_events", []):
+        pump_times.append(
+            pd.to_datetime(ev["timestamp"], utc=True).tz_convert(LOCAL_TZ).tz_localize(None)
+        )
+
+if not frames:
+    st.info("Not enough readings yet. Start the simulator or ESP32 and check back in a few minutes.")
+    st.stop()
+if no_data:
+    st.caption("⏳ Waiting for first sensor reading: " + ", ".join(no_data))
+all_df = pd.concat(frames.values())
+BUCKET = "6h"   # 7 days -> 28 points per line
+
+# ---------------------------------------------------------------------------
 # Analytics Overview
 # ---------------------------------------------------------------------------
+below = (all_df["moisture"] < WATER_THRESHOLD).mean() * 100
 render_overview_card([
-    ("System Efficiency Index", "87.5%"),
-    ("Predicted Water Savings", "$1,500"),
-    ("Predicted Water Used", "4 hhm"),
-    ("Predicted Deviation", "0.0%"),
+    ("Readings Analysed", f"{len(all_df):,}"),
+    ("Average Soil Moisture", f"{all_df['moisture'].mean():.0f}%"),
+    (f"Time Below {WATER_THRESHOLD}%", f"{below:.0f}%"),
+    ("Pump Runs (7 days)", str(len(pump_times))),
 ])
 
 st.write("")
 
-DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"]
 
 # ---------------------------------------------------------------------------
@@ -178,31 +264,41 @@ MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"]
 # ---------------------------------------------------------------------------
 row1_left, row1_right = st.columns(2)
 
+PALETTE = [
+    ("#2e7d54", "rgba(46,125,84,0.15)"),
+    ("#4CAF7D", "rgba(76,175,125,0.12)"),
+    ("#9ccc9a", "rgba(156,204,154,0.1)"),
+]
+
 with row1_left:
+    traces = []
+    for i, (name, df) in enumerate(frames.items()):
+        rs = df["moisture"].resample(BUCKET).mean()
+        line, fill = PALETTE[i % len(PALETTE)]
+        traces.append({
+            "x": labels(rs.index), "y": clean(rs), "name": name,
+            "mode": "lines", "connectgaps": True,
+            "line": {"color": line, "shape": "spline"},
+            "fill": "tozeroy", "fillcolor": fill,
+        })
     render_chart_card(
         "Predictive Soil Moisture Trend",
-        [
-            {"x": DAYS, "y": [45, 60, 55, 70, 50, 40, 35], "name": "Zone 1",
-             "mode": "lines", "line": {"color": "#2e7d54", "shape": "spline"},
-             "fill": "tozeroy", "fillcolor": "rgba(46,125,84,0.15)"},
-            {"x": DAYS, "y": [30, 42, 50, 65, 58, 48, 44], "name": "Zone 2",
-             "mode": "lines", "line": {"color": "#4CAF7D", "shape": "spline"},
-             "fill": "tozeroy", "fillcolor": "rgba(76,175,125,0.12)"},
-            {"x": DAYS, "y": [55, 48, 60, 52, 66, 60, 52], "name": "Zone 3",
-             "mode": "lines", "line": {"color": "#9ccc9a", "shape": "spline"},
-             "fill": "tozeroy", "fillcolor": "rgba(156,204,154,0.1)"},
-        ],
+        traces,
         {"yaxis": {"range": [0, 100], "gridcolor": "#eef4f0"}},
     )
 
 with row1_right:
+    rain_pct = all_df["rain_detected"].resample(BUCKET).mean() * 100
+    moist = all_df["moisture"].resample(BUCKET).mean()
     render_chart_card(
         "Weather Analysis",
         [
-            {"x": DAYS, "y": [10, 25, 15, 30, 20, 18, 22], "name": "Rainfall (mm)",
-             "mode": "lines", "line": {"color": "#3a9668", "shape": "spline"}},
-            {"x": DAYS, "y": [20, 18, 28, 22, 30, 26, 24], "name": "Soil Moisture",
-             "mode": "lines", "line": {"color": "#e0a530", "dash": "dash", "shape": "spline"}},
+            {"x": labels(rain_pct.index), "y": clean(rain_pct), "name": "Rain detected (%)",
+             "mode": "lines", "connectgaps": True,
+             "line": {"color": "#3a9668", "shape": "spline"}},
+            {"x": labels(moist.index), "y": clean(moist), "name": "Soil Moisture (%)",
+             "mode": "lines", "connectgaps": True,
+             "line": {"color": "#e0a530", "dash": "dash", "shape": "spline"}},
         ],
         {},
     )
@@ -210,13 +306,13 @@ with row1_right:
 st.write("")
 
 # ---------------------------------------------------------------------------
-# Row 2: Water vs. Energy | Cost analysis
+# Row 2: Water vs. Energy | Cost analysis  (no real source — sample data)
 # ---------------------------------------------------------------------------
 row2_left, row2_right = st.columns(2)
 
 with row2_left:
     render_chart_card(
-        "Water vs. Energy Efficiency",
+        "Water vs. Energy Efficiency (sample data)",
         [
             {"x": MONTHS, "y": [1200, 900, 1350, 1000, 1500, 1100, 1600, 1250],
              "name": "Water Used (L)", "type": "bar", "marker": {"color": "#3a9668"}},
@@ -228,7 +324,7 @@ with row2_left:
 
 with row2_right:
     render_chart_card(
-        "Cost Analysis",
+        "Cost Analysis (sample data)",
         [
             {
                 "type": "pie",

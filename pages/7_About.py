@@ -498,8 +498,6 @@ st.markdown("""
 # ═════════════════════════════════════════════════════════════
 # 1. HERO SECTION
 # ═════════════════════════════════════════════════════════════
-if st.button("← Back to Dashboard"):
-    st.switch_page("pages/6_Dashboard.py")
 
 st.markdown("""
 <div class="hero-section">
@@ -536,17 +534,10 @@ st.markdown("""
 st.markdown("""
 <div class="story-block">
     <p>
-        It all started at 2 AM during a motivation burst. We bought 12 houseplants.
-        By day 2, we'd killed 3. By day 5, the fern fainted dramatically. Sound familiar?
-    </p>
-    <p>
-        We realized: plant care shouldn't feel like anxiety. It should feel like self-care.
-        Like that cozy feeling of watering your plants with a warm cup of tea, knowing
-        they're thriving not just surviving.
-    </p>
-    <p>
-        So we built <strong>FloraPulse</strong> to turn guesswork into peaceful daily rituals.
-        No guilt. No dead ferns. Just plants that love you back. 🌿
+        It started with a simple question: how do you know when a plant actually needs water?
+We were watering on guesswork. Some plants got too much, some got forgotten, and none of us could say why one died and another didn’t. Watering by schedule ignores everything that matters: how dry the soil really is, and whether it’s about to rain anyway.
+
+So for our third-semester mini project we decided to measure it. An ESP32 reads the soil, a backend decides, and the pump only runs when the soil is dry and no rain is coming. FloraPulse is what came out of that: three students, one question, and a lot of debugging. 🌿
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -605,94 +596,6 @@ st.markdown('<div class="gentle-divider"></div>', unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════════════════════
-# 4. "WHO IS IT FOR?" — The Vibe Tribe
-# ═════════════════════════════════════════════════════════════
-st.markdown("""
-<div class="section-header">
-    <h2>Which Plant Parent Are You? ✨</h2>
-    <p>Find your vibe. No wrong answers here.</p>
-</div>
-""", unsafe_allow_html=True)
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🌿 The Redemption Arc",
-    "🎨 The Aesthete",
-    "🎧 The Lo-Fi Dreamer",
-    "🏢 The Busy Hustler",
-])
-
-with tab1:
-    st.markdown("""
-    <div class="vibe-content">
-        <p>
-            <strong>🌿 The Serial Plant Killer on a Redemption Arc</strong>
-        </p>
-        <p>
-            You mean well, but you forget. Your track record: brown leaves, withered stems,
-            guilty vibes. We're here to break that cycle. Second chances only. 💚
-        </p>
-        <p>
-            FloraPulse remembers so you don't have to. Think of it as a gentle nudge from your
-            plant bestie who actually knows what they're doing.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with tab2:
-    st.markdown("""
-    <div class="vibe-content">
-        <p>
-            <strong>🎨 The Aesthetic Room Decorator</strong>
-        </p>
-        <p>
-            Your space is a Pinterest board, and your plants are the main character. You want
-            them thriving AND looking like they walked out of a magazine. We got the assist.
-        </p>
-        <p>
-            Because nothing kills the aesthetic faster than a yellowing leaf. Let's keep your
-            green babies looking their absolute best. 📸
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with tab3:
-    st.markdown("""
-    <div class="vibe-content">
-        <p>
-            <strong>🎧 The Lo-Fi & Rainy Day Dreamer</strong>
-        </p>
-        <p>
-            Plant care is your comfort ritual. Watering feels like meditation. You want gentle
-            reminders, real-time vibes, and the satisfaction of watching your green babies glow up.
-        </p>
-        <p>
-            FloraPulse turns plant care into the peaceful moment you deserve.
-            Put on those lo-fi beats, grab your watering can, and enjoy. 🎵
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with tab4:
-    st.markdown("""
-    <div class="vibe-content">
-        <p>
-            <strong>🏢 The Busy Hustler with 99 Tabs Open</strong>
-        </p>
-        <p>
-            You love your plants but forget they exist. You're juggling deadlines, meetings,
-            and life and somehow your pothos is supposed to survive too?
-        </p>
-        <p>
-            We handle the reminders, the weather checks, and the peace of mind.
-            Your plants won't dry out while you're grinding. Promise. 💪
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown('<div class="gentle-divider"></div>', unsafe_allow_html=True)
-
-
-# ═════════════════════════════════════════════════════════════
 # 5. TEAM INTRODUCTION — The Garden Guardians
 # ═════════════════════════════════════════════════════════════
 st.markdown("""
@@ -709,17 +612,17 @@ with t1:
     <div class="ghibli-card sage team-card">
         <div class="team-emoji-avatar sage-bg">🎨</div>
         <div class="team-name">Pranjali</div>
-        <div class="team-title">Chief Vibe Curator & Backend Orchestrator</div>
+        <div class="team-title">Lead Chaos Wrangler & Greenery Aestheticist</div>
         <div class="team-bio">
             Pranjali turns chaos into elegant code and vibes into magic.
             When not debugging, she's teaching her pothos the art of thriving.
-            <br><em>Emotional support plant: Monstera 'Bartholomew' 🪴</em>
+            <br><em>🪴</em>
         </div>
         <div class="team-quote">
             "Good code is like a well-watered plant clean, purposeful, and thriving."
         </div>
         <div class="team-fun-fact">
-            😤 Pet peeve: people pouring cold coffee into plant pots
+              Pet peeve: people pouring cold coffee into plant pots
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -729,17 +632,17 @@ with t2:
     <div class="ghibli-card cream-bg team-card">
         <div class="team-emoji-avatar cream-team-bg">🌿</div>
         <div class="team-name">Shreeya</div>
-        <div class="team-title">Lead Chaos Wrangler & Greenery Aestheticist</div>
+        <div class="team-title">Senior Overthinker & Pixel Florist</div>
         <div class="team-bio">
             Shreeya believes plants are tiny therapists. She designs systems
             that make sense to humans (and plants). Found frequently talking to succulents.
-            <br><em>Emotional support plant: String of pearls 'Luna' 📿</em>
+            <br><em>📿</em>
         </div>
         <div class="team-quote">
             "Every plant deserves to feel loved, even the dramatic ones."
         </div>
         <div class="team-fun-fact">
-            😤 Pet peeve: plant names that are just numbers
+              Pet peeve: plant names that are just numbers
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -749,18 +652,18 @@ with t3:
     <div class="ghibli-card blush team-card">
         <div class="team-emoji-avatar blush-bg">✨</div>
         <div class="team-name">Isheka</div>
-        <div class="team-title">Senior Overthinker & Pixel Florist</div>
+        <div class="team-title">Chief Vibe Curator & Backend Orchestrator</div>
         <div class="team-bio">
             Isheka translates plant dreams into pixels. She obsesses over
             experience, plant health, and the perfect shade of green.
             Her room looks like a secret garden.
-            <br><em>Emotional support plant: Calathea 'Whisper' 🌸</em>
+            <br><em> 🌸</em>
         </div>
         <div class="team-quote">
             "A good interface is like a plant-parent intuitive, responsive, and always listening."
         </div>
         <div class="team-fun-fact">
-            😤 Pet peeve: interfaces that don't have dark mode
+              Pet peeve: interfaces that don't have dark mode
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -782,21 +685,16 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-cta_left, cta_spacer, cta_right = st.columns([2, 1, 2])
+_, cta_center, _ = st.columns([1.5, 2, 1.5])
 
-with cta_left:
+with cta_center:
     if st.button("🌿  View Live Dashboard", key="btn_dashboard", use_container_width=True):
-        try:
-            st.switch_page("pages/1_Dashboard.py")
-        except Exception:
-            st.info("Dashboard page coming soon! 🚀")
+        if st.session_state.get("auth_token"):
+            st.switch_page("pages/6_Dashboard.py")
+        else:
+            st.switch_page("pages/2_Login.py")
 
-with cta_right:
-    if st.button("🌸  Check Out Plant Info", key="btn_plantinfo", use_container_width=True):
-        try:
-            st.switch_page("pages/2_Plant_UI.py")
-        except Exception:
-            st.info("Plant Info page coming soon! 🌱")
+
 
 
 # ═════════════════════════════════════════════════════════════

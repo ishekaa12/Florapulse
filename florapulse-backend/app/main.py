@@ -1,32 +1,39 @@
 from fastapi import FastAPI, HTTPException, Depends, Header, Form
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-import os
 
 # ============= IMPORTS: Database & Models =============
+# pyrefly: ignore[missing-import]
 from app.database import get_db
+# pyrefly: ignore[missing-import]
 from app.config import settings
+# pyrefly: ignore[missing-import]
 from app.database_models import (
-    User, Plant, Sensor, SensorReading, 
+    User, Plant, Sensor, SensorReading,
     IrrigationDecision, PumpEvent, SystemStatus
 )
 
 # ============= IMPORTS: Services & Utils =============
+# pyrefly: ignore[missing-import]
 from app.services.irrigation_engine import decide_irrigation
+# pyrefly: ignore[missing-import]
 from app.services.prediction_engine import predict_next_watering, calculate_depletion_rate
-from app.services.weather_service import fetch_weather_forecast
+# pyrefly: ignore[missing-import]
+from app.services.weather_service import fetch_weather_forecast, get_cached_forecast
+# pyrefly: ignore[missing-import]
+import app.services.pump_service as pump_service
+# pyrefly: ignore[missing-import]
 from app.utils.validators import validate_sensor_data
+# pyrefly: ignore[missing-import]
 from app.utils.auth import (
-    hash_password, verify_password, 
-    create_access_token, decode_access_token
+    hash_password, verify_password,
+    create_access_token, decode_access_token, verify_device_key
 )
 
 # ============= IMPORTS: Pydantic Models =============
-# pyrefly: ignore [missing-import]
-from app.models import (
-    SensorDataRequest, 
-    UserCreate, UserLogin
-)
+# pyrefly: ignore[missing-import]
+from app.models import SensorDataRequest, UserCreate, UserLogin
 
 # ============= CREATE APP =============
 app = FastAPI(
@@ -34,6 +41,7 @@ app = FastAPI(
     description="Smart plant irrigation system with sensors and predictions",
     version="1.0.0"
 )
+
 
 # ============= STARTUP EVENT =============
 @app.on_event("startup")
@@ -68,21 +76,21 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     existing = db.query(User).filter(
         (User.username == user.username) | (User.email == user.email)
     ).first()
-    
+
     if existing:
         raise HTTPException(400, detail="Username or email already exists")
-    
+
     new_user = User(
         username=user.username,
         email=user.email,
         password_hash=hash_password(user.password),
         full_name=user.full_name
     )
-    
+
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    
+
     return {
         "id": new_user.id,
         "username": new_user.username,
@@ -95,17 +103,17 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 def login(credentials: UserLogin, db: Session = Depends(get_db)):
     """Login and receive JWT access token."""
     user = db.query(User).filter(User.username == credentials.username).first()
-    
+
     if not user or not verify_password(credentials.password, user.password_hash):
         raise HTTPException(401, detail="Invalid credentials")
-    
+
     access_token = create_access_token(
         data={"sub": user.username, "user_id": user.id}
     )
-    
+
     user.last_login = datetime.now()
     db.commit()
-    
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -121,29 +129,47 @@ def login(credentials: UserLogin, db: Session = Depends(get_db)):
 
 @app.get("/api/auth/me")
 def get_current_user(authorization: str = Header(None), db: Session = Depends(get_db)):
-    """Get current authenticated user info."""
+    """Get current authenticated user info (route handler, not a dependency)."""
     if not authorization:
         raise HTTPException(401, detail="Not authenticated")
-    
-    if authorization.startswith("Bearer "):
-        token = authorization[7:]
-    else:
-        token = authorization
-    
+
+    token = authorization[7:] if authorization.startswith("Bearer ") else authorization
+
     token_data = decode_access_token(token)
     if not token_data:
         raise HTTPException(401, detail="Invalid token")
-    
+
     user = db.query(User).filter(User.id == token_data["user_id"]).first()
     if not user:
         raise HTTPException(404, detail="User not found")
-    
+
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
         "full_name": user.full_name
     }
+
+
+def get_authenticated_user(
+    authorization: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Dependency: return the authenticated SQLAlchemy User object."""
+    if not authorization:
+        raise HTTPException(401, detail="Not authenticated")
+
+    token = authorization[7:] if authorization.startswith("Bearer ") else authorization
+    token_data = decode_access_token(token)
+
+    if not token_data:
+        raise HTTPException(401, detail="Invalid token")
+
+    user = db.query(User).filter(User.id == token_data["user_id"]).first()
+    if not user:
+        raise HTTPException(404, detail="User not found")
+
+    return user
 
 
 # ============================================================================
@@ -159,22 +185,16 @@ def create_plant(
     db: Session = Depends(get_db)
 ):
     """Create a new plant for authenticated user."""
-
     if not authorization:
         raise HTTPException(401, detail="Not authenticated")
 
-    if authorization.startswith("Bearer "):
-        token = authorization[7:]
-    else:
-        token = authorization
-
+    token = authorization[7:] if authorization.startswith("Bearer ") else authorization
     token_data = decode_access_token(token)
 
     if not token_data:
         raise HTTPException(401, detail="Invalid token")
 
     user = db.query(User).filter(User.id == token_data["user_id"]).first()
-
     if not user:
         raise HTTPException(404, detail="User not found")
 
@@ -183,7 +203,6 @@ def create_plant(
         name=name,
         description=description
     )
-
     db.add(new_plant)
     db.commit()
     db.refresh(new_plant)
@@ -192,7 +211,6 @@ def create_plant(
         plant_id=new_plant.id,
         sensor_id=sensor_id
     )
-
     db.add(new_sensor)
     db.commit()
     db.refresh(new_sensor)
@@ -212,18 +230,14 @@ def get_user_plants(authorization: str = Header(None), db: Session = Depends(get
     """Get all plants for authenticated user."""
     if not authorization:
         raise HTTPException(401, detail="Not authenticated")
-    
-    if authorization.startswith("Bearer "):
-        token = authorization[7:]
-    else:
-        token = authorization
-    
+
+    token = authorization[7:] if authorization.startswith("Bearer ") else authorization
     token_data = decode_access_token(token)
     if not token_data:
         raise HTTPException(401, detail="Invalid token")
-    
+
     plants = db.query(Plant).filter(Plant.user_id == token_data["user_id"]).all()
-    
+
     return {
         "plants": [
             {
@@ -246,24 +260,20 @@ def get_plant_details(
     """Get plant details including sensors and latest readings."""
     if not authorization:
         raise HTTPException(401, detail="Not authenticated")
-    
-    if authorization.startswith("Bearer "):
-        token = authorization[7:]
-    else:
-        token = authorization
-    
+
+    token = authorization[7:] if authorization.startswith("Bearer ") else authorization
     token_data = decode_access_token(token)
     if not token_data:
         raise HTTPException(401, detail="Invalid token")
-    
+
     plant = db.query(Plant).filter(
         Plant.id == plant_id,
         Plant.user_id == token_data["user_id"]
     ).first()
-    
+
     if not plant:
         raise HTTPException(404, detail="Plant not found")
-    
+
     return {
         "id": plant.id,
         "name": plant.name,
@@ -272,33 +282,146 @@ def get_plant_details(
         "sensors_count": len(plant.sensors)
     }
 
+
 @app.get("/api/plants/{plant_id}/depletion-rate")
-def get_plant_depletion_rate(
-    plant_id: int,
-    db: Session = Depends(get_db)
-):
+def get_plant_depletion_rate(plant_id: int, db: Session = Depends(get_db)):
     """Get current soil moisture depletion rate for a plant."""
-
-    result = calculate_depletion_rate(
-        db,
-        plant_id=plant_id,
-        hours_lookback=24
-    )
-
-    return result
+    return calculate_depletion_rate(db, plant_id=plant_id, hours_lookback=24)
 
 
 @app.get("/api/plants/{plant_id}/next-watering-prediction")
-def get_next_watering_prediction(
+def get_next_watering_prediction(plant_id: int, db: Session = Depends(get_db)):
+    """Predict when a plant will next require watering."""
+    return predict_next_watering(db, plant_id=plant_id)
+
+
+@app.post("/api/plants/{plant_id}/water-now")
+def water_now(
     plant_id: int,
+    user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Predict when a plant will next require watering."""
+    """Queue a manual watering request for a plant owned by the user."""
+    plant = db.query(Plant).filter(
+        Plant.id == plant_id,
+        Plant.user_id == user.id
+    ).first()
 
-    return predict_next_watering(
-        db,
-        plant_id=plant_id
+    if not plant:
+        raise HTTPException(404, detail="Plant not found")
+
+    ok, message = pump_service.queue_manual(db, plant_id)
+    if not ok:
+        raise HTTPException(429, detail=message)
+
+    return {"status": "queued", "message": message}
+
+
+@app.get("/api/plants/{plant_id}/pump-status")
+def get_plant_pump_status(
+    plant_id: int,
+    user: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    """Get pump status for a plant owned by the user."""
+    plant = db.query(Plant).filter(
+        Plant.id == plant_id,
+        Plant.user_id == user.id
+    ).first()
+
+    if not plant:
+        raise HTTPException(404, detail="Plant not found")
+
+    return pump_service.pump_status(db, plant_id)
+
+
+@app.get("/api/weather/current")
+def weather_current(user: User = Depends(get_authenticated_user)):
+    """Cached forecast, the same data the irrigation decisions use."""
+    f = get_cached_forecast(settings.default_city, settings.weather_cache_minutes)
+    return {"city": settings.default_city, **f}
+
+
+@app.get("/api/plants/{plant_id}/latest-decision")
+def latest_decision(
+    plant_id: int,
+    user: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    """Most recent irrigation decision (with reason text) for a plant."""
+    plant = db.query(Plant).filter(
+        Plant.id == plant_id,
+        Plant.user_id == user.id
+    ).first()
+    if not plant:
+        raise HTTPException(404, detail="Plant not found")
+
+    d = (
+        db.query(IrrigationDecision)
+        .filter(IrrigationDecision.plant_id == plant_id)
+        .order_by(IrrigationDecision.timestamp.desc())
+        .first()
     )
+    if not d:
+        return {"decision": None}
+
+    return {
+        "decision": d.decision,
+        "reason": d.reason,
+        "confidence": d.confidence,
+        "moisture_level": d.moisture_level
+    }
+
+
+@app.get("/api/plants/{plant_id}/activity")
+def plant_activity(
+    plant_id: int,
+    hours: int = 72,
+    user: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    """Pump runs and decision counts for a plant over the last N hours."""
+    plant = db.query(Plant).filter(
+        Plant.id == plant_id,
+        Plant.user_id == user.id
+    ).first()
+    if not plant:
+        raise HTTPException(404, detail="Plant not found")
+
+    since_utc = datetime.utcnow() - timedelta(hours=hours)   # pump events are stored in UTC
+    since_local = datetime.now() - timedelta(hours=hours)    # decisions use the DB's local default
+
+    pumps = (
+        db.query(PumpEvent)
+        .filter(
+            PumpEvent.plant_id == plant_id,
+            PumpEvent.action == "ON",
+            PumpEvent.timestamp >= since_utc
+        )
+        .order_by(PumpEvent.timestamp)
+        .all()
+    )
+    counts = (
+        db.query(IrrigationDecision.decision, func.count())
+        .filter(
+            IrrigationDecision.plant_id == plant_id,
+            IrrigationDecision.timestamp >= since_local
+        )
+        .group_by(IrrigationDecision.decision)
+        .all()
+    )
+
+    return {
+        "pump_events": [
+            {
+                "timestamp": p.timestamp.isoformat() + "Z",
+                "duration_seconds": p.duration_seconds,
+                "reason": p.reason
+            }
+            for p in pumps
+        ],
+        "decision_counts": {d: n for d, n in counts}
+    }
 
 
 # ============================================================================
@@ -310,7 +433,6 @@ def get_my_sensors(authorization: str = Header(None), db: Session = Depends(get_
     """
     Return all sensors belonging to the authenticated user's plants,
     each enriched with the latest sensor reading values.
-    Used by the Sensors dashboard page.
     """
     if not authorization:
         raise HTTPException(401, detail="Not authenticated")
@@ -322,14 +444,12 @@ def get_my_sensors(authorization: str = Header(None), db: Session = Depends(get_
 
     user_id = token_data["user_id"]
 
-    # Get all plants owned by this user
     user_plants = db.query(Plant).filter(Plant.user_id == user_id).all()
     plant_map = {p.id: p.name for p in user_plants}
 
     if not plant_map:
         return {"sensors": []}
 
-    # Get all sensors linked to those plants
     sensors = (
         db.query(Sensor)
         .filter(Sensor.plant_id.in_(list(plant_map.keys())))
@@ -364,15 +484,17 @@ def get_my_sensors(authorization: str = Header(None), db: Session = Depends(get_
 def get_sensor_status(sensor_id: str, db: Session = Depends(get_db)):
     """Get sensor connection status and latest reading."""
     sensor = db.query(Sensor).filter(Sensor.sensor_id == sensor_id).first()
-    
+
     if not sensor:
         raise HTTPException(404, detail="Sensor not found")
-    
-    latest_reading = db.query(SensorReading)\
-        .filter(SensorReading.sensor_id == sensor.id)\
-        .order_by(SensorReading.timestamp.desc())\
+
+    latest_reading = (
+        db.query(SensorReading)
+        .filter(SensorReading.sensor_id == sensor.id)
+        .order_by(SensorReading.timestamp.desc())
         .first()
-    
+    )
+
     return {
         "sensor_id": sensor.sensor_id,
         "sensor_name": sensor.sensor_name,
@@ -385,10 +507,6 @@ def get_sensor_status(sensor_id: str, db: Session = Depends(get_db)):
     }
 
 
-# ============================================================================
-# SENSOR DATA ENDPOINTS
-# ============================================================================
-
 @app.post("/api/sensors/register")
 def register_sensor(
     sensor_id: str = Form(...),
@@ -398,7 +516,6 @@ def register_sensor(
 ):
     """
     Register a sensor string-ID against an existing plant.
-    Called by simulator scripts before they start posting data.
     Requires the plant to belong to the authenticated user.
     """
     if not authorization:
@@ -409,7 +526,6 @@ def register_sensor(
     if not token_data:
         raise HTTPException(401, detail="Invalid token")
 
-    # Verify plant ownership
     plant = db.query(Plant).filter(
         Plant.id == plant_id,
         Plant.user_id == token_data["user_id"]
@@ -417,7 +533,6 @@ def register_sensor(
     if not plant:
         raise HTTPException(404, detail=f"Plant {plant_id} not found or not owned by you")
 
-    # Upsert sensor
     existing = db.query(Sensor).filter(Sensor.sensor_id == sensor_id).first()
     if existing:
         if existing.plant_id != plant_id:
@@ -450,20 +565,33 @@ def register_sensor(
     }
 
 
-@app.post("/api/sensor-data/upload")
-def upload_sensor_data(request: SensorDataRequest, db: Session = Depends(get_db)):
-    """Upload sensor data from ESP32."""
+# ============================================================================
+# SENSOR DATA ENDPOINTS
+# ============================================================================
+
+@app.post(
+    "/api/sensor-data/upload",
+    dependencies=[Depends(verify_device_key)]
+)
+def upload_sensor_data(
+    request: SensorDataRequest,
+    db: Session = Depends(get_db)
+):
+    """Upload sensor data, make a weather-aware decision, and issue a pump command."""
+
+    # 1. Validate incoming sensor data.
     is_valid, message = validate_sensor_data(
         request.moisture,
         request.temperature,
         request.humidity
     )
-    
     if not is_valid:
         raise HTTPException(400, detail=message)
-    
-    sensor = db.query(Sensor).filter(Sensor.sensor_id == request.sensor_id).first()
-    
+
+    # 2. Find the registered sensor and its plant.
+    sensor = db.query(Sensor).filter(
+        Sensor.sensor_id == request.sensor_id
+    ).first()
     if not sensor:
         raise HTTPException(
             404,
@@ -473,10 +601,16 @@ def upload_sensor_data(request: SensorDataRequest, db: Session = Depends(get_db)
                 "or add the plant via the web app."
             )
         )
-    
+
+    plant_id = sensor.plant_id
+    plant = db.query(Plant).filter(Plant.id == plant_id).first()
+    if not plant:
+        raise HTTPException(404, detail="Associated plant not found")
+
+    # 3. Update sensor connection status and save the reading.
     sensor.is_connected = True
     sensor.last_data_received = datetime.now()
-    
+
     reading = SensorReading(
         sensor_id=sensor.id,
         moisture=request.moisture,
@@ -484,32 +618,57 @@ def upload_sensor_data(request: SensorDataRequest, db: Session = Depends(get_db)
         humidity=request.humidity,
         rain_detected=request.rain_detected
     )
-    
-    decision_result = decide_irrigation(
-        request.moisture,
-        request.rain_detected
-    )
-    
-    decision = IrrigationDecision(
-        plant_id=sensor.plant_id,
-        moisture_level=request.moisture,
-        decision=decision_result["decision"],
-        reason=decision_result["reason"],
-        confidence=decision_result["confidence"]
-    )
-    
-    db.add_all([reading, decision, sensor])
+
+    db.add(reading)
+    db.add(sensor)
     db.commit()
-    
+    db.refresh(reading)
+
+    # 4. Retrieve the cached weather forecast.
+    forecast = get_cached_forecast(
+        settings.default_city,
+        settings.weather_cache_minutes
+    )
+    rain_prob = forecast.get("rain_probability", 0)
+
+    # 5. Make the irrigation decision using sensor and forecast data.
+    result = decide_irrigation(
+        request.moisture,
+        request.rain_detected,
+        rain_prob
+    )
+
+    reason = f"{result['reason']} [forecast rain {rain_prob:.0f}%"
+    reason += "]" if forecast.get("available") else ", forecast unavailable]"
+
+    # 6. Save the irrigation decision.
+    decision = IrrigationDecision(
+        plant_id=plant_id,
+        moisture_level=request.moisture,
+        decision=result["decision"],
+        reason=reason[:500],
+        confidence=result["confidence"]
+    )
+    db.add(decision)
+    db.commit()
+
+    # 7. Generate the pump command (the device must execute it).
+    pump = pump_service.command_for_upload(
+        db,
+        plant_id,
+        result["decision"],
+        reason
+    )
+
     return {
         "status": "success",
         "reading_id": reading.id,
-        "plant_id": sensor.plant_id,
-        "sensor_id": sensor.sensor_id,
-        "decision": decision_result["decision"],
-        "confidence": decision_result["confidence"]
+        "plant_id": plant_id,
+        "sensor_id": request.sensor_id,
+        "decision": result["decision"],
+        "confidence": result["confidence"],
+        "pump": pump
     }
-
 
 
 @app.get("/api/sensor-data/history")
@@ -520,13 +679,13 @@ def get_sensor_history(
     plant_id: int = None,
     db: Session = Depends(get_db)
 ):
-    """Get historical sensor readings."""
+    """Get historical sensor readings (newest first)."""
     cutoff_time = datetime.now() - timedelta(hours=hours)
-    
+
     query = db.query(SensorReading).filter(
         SensorReading.timestamp >= cutoff_time
     )
-    
+
     if sensor_id:
         sensor = db.query(Sensor).filter(Sensor.sensor_id == sensor_id).first()
         if sensor:
@@ -536,9 +695,9 @@ def get_sensor_history(
         if sensors:
             sensor_ids = [s.id for s in sensors]
             query = query.filter(SensorReading.sensor_id.in_(sensor_ids))
-    
+
     readings = query.order_by(SensorReading.timestamp.desc()).limit(limit).all()
-    
+
     return {
         "readings": [
             {
@@ -561,13 +720,15 @@ def get_sensor_history(
 @app.get("/api/status")
 def get_system_status(db: Session = Depends(get_db)):
     """Get current system status."""
-    latest_reading = db.query(SensorReading)\
-        .order_by(SensorReading.timestamp.desc())\
+    latest_reading = (
+        db.query(SensorReading)
+        .order_by(SensorReading.timestamp.desc())
         .first()
-    
+    )
+
     if not latest_reading:
         raise HTTPException(404, detail="No sensor data available")
-    
+
     return {
         "status": "operational",
         "last_moisture": latest_reading.moisture,
@@ -580,17 +741,15 @@ def get_system_status(db: Session = Depends(get_db)):
 # ============================================================================
 # IRRIGATION DECISION ENDPOINTS
 # ============================================================================
+
 @app.post("/api/irrigation/decide")
 def get_irrigation_decision(
     request: SensorDataRequest,
     db: Session = Depends(get_db)
 ):
     """Get irrigation decision using sensor and weather data."""
+    weather = fetch_weather_forecast(settings.default_city)
 
-    # Fetch weather forecast
-    weather = fetch_weather_forecast("Mumbai")
-
-    # Make irrigation decision
     result = decide_irrigation(
         request.moisture,
         request.rain_detected,
@@ -612,47 +771,31 @@ def get_irrigation_decision(
 # ============================================================================
 
 @app.get("/api/prediction/next-watering")
-def get_next_watering_prediction(
+def get_prediction_by_sensor(
     sensor_id: str = None,
-    current_moisture: float = None,
+    current_moisture: float = None,   # kept for backward compatibility; prediction uses DB history
     db: Session = Depends(get_db)
 ):
-    """Estimate when next watering will be needed."""
-    if current_moisture is None:
-        if sensor_id:
-            sensor = db.query(Sensor).filter(Sensor.sensor_id == sensor_id).first()
-            if not sensor:
-                raise HTTPException(404, detail="Sensor not found")
-            
-            latest = db.query(SensorReading)\
-                .filter(SensorReading.sensor_id == sensor.id)\
-                .order_by(SensorReading.timestamp.desc())\
-                .first()
-            
-            if not latest:
-                raise HTTPException(404, detail="No sensor data available")
-            
-            current_moisture = latest.moisture
-        else:
-            latest = db.query(SensorReading)\
-                .order_by(SensorReading.timestamp.desc())\
-                .first()
-            
-            if not latest:
-                raise HTTPException(404, detail="No sensor data available")
-            
-            current_moisture = latest.moisture
-            plant_id = latest.sensor.plant_id if latest.sensor else None
-    
-    if 'plant_id' not in locals() or plant_id is None:
-        if sensor_id:
-            plant_id = sensor.plant_id
-        else:
-            raise HTTPException(404, detail="No plant data available to predict")
+    """Estimate when next watering will be needed (by sensor, or latest reading overall)."""
+    if sensor_id:
+        sensor = db.query(Sensor).filter(Sensor.sensor_id == sensor_id).first()
+        if not sensor:
+            raise HTTPException(404, detail="Sensor not found")
+        plant_id = sensor.plant_id
+    else:
+        latest = (
+            db.query(SensorReading)
+            .order_by(SensorReading.timestamp.desc())
+            .first()
+        )
+        if not latest:
+            raise HTTPException(404, detail="No sensor data available")
+        plant_id = latest.sensor.plant_id if latest.sensor else None
 
-    prediction = predict_next_watering(db, plant_id=plant_id)
-    
-    return prediction
+    if plant_id is None:
+        raise HTTPException(404, detail="No plant data available to predict")
+
+    return predict_next_watering(db, plant_id=plant_id)
 
 
 # ============================================================================
@@ -667,56 +810,53 @@ def get_dashboard_data(
     """Get aggregated data for dashboard for the authenticated user."""
     if not authorization:
         raise HTTPException(401, detail="Not authenticated")
-    
-    if authorization.startswith("Bearer "):
-        token = authorization[7:]
-    else:
-        token = authorization
-    
+
+    token = authorization[7:] if authorization.startswith("Bearer ") else authorization
     token_data = decode_access_token(token)
     if not token_data:
         raise HTTPException(401, detail="Invalid token")
-        
+
     user_id = token_data["user_id"]
-    
-    # Get user's plants
+
     user_plants = db.query(Plant).filter(Plant.user_id == user_id).all()
     if not user_plants:
         raise HTTPException(404, detail="No plants found for user")
-        
+
     plant_ids = [p.id for p in user_plants]
-    
-    # Get user's sensors
+
     user_sensors = db.query(Sensor).filter(Sensor.plant_id.in_(plant_ids)).all()
     sensor_ids = [s.id for s in user_sensors]
-    
+
     if not sensor_ids:
         raise HTTPException(404, detail="No sensors found for user")
 
-    latest_reading = db.query(SensorReading)\
-        .filter(SensorReading.sensor_id.in_(sensor_ids))\
-        .order_by(SensorReading.timestamp.desc())\
+    latest_reading = (
+        db.query(SensorReading)
+        .filter(SensorReading.sensor_id.in_(sensor_ids))
+        .order_by(SensorReading.timestamp.desc())
         .first()
-    
+    )
+
     if not latest_reading:
         raise HTTPException(404, detail="No sensor data available for this user")
-    
-    recent = db.query(SensorReading)\
-        .filter(SensorReading.sensor_id.in_(sensor_ids))\
-        .order_by(SensorReading.timestamp.desc())\
-        .limit(10)\
+
+    recent = (
+        db.query(SensorReading)
+        .filter(SensorReading.sensor_id.in_(sensor_ids))
+        .order_by(SensorReading.timestamp.desc())
+        .limit(10)
         .all()
-    
-    latest_decision = db.query(IrrigationDecision)\
-        .filter(IrrigationDecision.plant_id.in_(plant_ids))\
-        .order_by(IrrigationDecision.timestamp.desc())\
+    )
+
+    latest_dec = (
+        db.query(IrrigationDecision)
+        .filter(IrrigationDecision.plant_id.in_(plant_ids))
+        .order_by(IrrigationDecision.timestamp.desc())
         .first()
-    
-    if plant_ids:
-        prediction = predict_next_watering(db, plant_id=plant_ids[0])
-    else:
-        prediction = None
-    
+    )
+
+    prediction = predict_next_watering(db, plant_id=plant_ids[0])
+
     return {
         "latest_reading": {
             "moisture": latest_reading.moisture,
@@ -734,11 +874,11 @@ def get_dashboard_data(
             for r in recent
         ],
         "latest_decision": {
-            "decision": latest_decision.decision if latest_decision else None,
-            "reason": latest_decision.reason if latest_decision else None,
-            "confidence": latest_decision.confidence if latest_decision else None,
-            "timestamp": latest_decision.timestamp if latest_decision else None
-        } if latest_decision else None,
+            "decision": latest_dec.decision,
+            "reason": latest_dec.reason,
+            "confidence": latest_dec.confidence,
+            "timestamp": latest_dec.timestamp
+        } if latest_dec else None,
         "prediction": prediction
     }
 
@@ -749,7 +889,7 @@ def get_dashboard_data(
 
 @app.get("/")
 def root():
-    """Root endpoint - redirects to API docs"""
+    """Root endpoint."""
     return {
         "message": "🌱 FloraPulse Backend API",
         "docs": "http://localhost:8000/docs",
@@ -762,25 +902,22 @@ def root():
 # ============================================================================
 
 def get_admin_user(authorization: str = Header(None), db: Session = Depends(get_db)):
+    """Dependency: authenticated user who must be an admin."""
     if not authorization:
         raise HTTPException(401, detail="Not authenticated")
-    
-    if authorization.startswith("Bearer "):
-        token = authorization[7:]
-    else:
-        token = authorization
-    
+
+    token = authorization[7:] if authorization.startswith("Bearer ") else authorization
     token_data = decode_access_token(token)
     if not token_data:
         raise HTTPException(401, detail="Invalid token")
-        
+
     user = db.query(User).filter(User.id == token_data["user_id"]).first()
     if not user:
         raise HTTPException(404, detail="User not found")
-        
+
     if not user.is_admin:
         raise HTTPException(403, detail="Not authorized. Admins only.")
-        
+
     return user
 
 
@@ -832,9 +969,18 @@ def admin_get_sensors(admin: User = Depends(get_admin_user), db: Session = Depen
 
 
 @app.get("/api/admin/readings")
-def admin_get_readings(limit: int = 100, admin: User = Depends(get_admin_user), db: Session = Depends(get_db)):
+def admin_get_readings(
+    limit: int = 100,
+    admin: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
     """Admin only: get recent readings"""
-    readings = db.query(SensorReading).order_by(SensorReading.timestamp.desc()).limit(limit).all()
+    readings = (
+        db.query(SensorReading)
+        .order_by(SensorReading.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
     return [
         {
             "sensor_id": r.sensor.sensor_id if r.sensor else "Unknown",
