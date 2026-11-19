@@ -1,5 +1,10 @@
-import base64, json, time
+import base64, json, re, socket, time
+from datetime import datetime
+from html import escape
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import requests
 import streamlit as st
 
 try:
@@ -8,29 +13,129 @@ except st.errors.StreamlitAPIException:
     pass  # already set by app.py
 s = st.session_state
 BASE = Path(__file__).parent
-SAVE_FILE = BASE / "settings.json"
-BATT = 85
+BACKEND_URL = "http://localhost:8000"
 UNITS = ["Celsius (°C)", "Fahrenheit (°F)"]
 LANGS = ["English", "Español", "Français", "Deutsch", "हिन्दी"]
 ZONES = ["UTC", "Asia/Kolkata (IST)", "Europe/London", "America/New_York", "America/Los_Angeles", "Australia/Sydney"]
 DEFAULTS = dict(min_m=30, max_m=75, rain=5, buf=6, man=10, dname="Garden Zone Controller",
-                unit=UNITS[0], lang=LANGS[0], tz=ZONES[0])
-HW = [("Zone 1 pump", "Last calibrated 12 days ago"),
-      ("Sensor A (moisture)", "Last calibrated 3 days ago"),
-      ("Sensor B (temperature)", "Last calibrated 3 days ago")]
+                temp_unit=UNITS[0], lang=LANGS[0], tz=ZONES[0])
+HW = ["Zone 1 pump", "Sensor A (moisture)", "Sensor B (temperature)"]
+ONLINE_WITHIN_SECS = 120
 
-# ---------- state ----------
-if "settings_init" not in s:
+# ---------- auth guard ----------
+s.setdefault("auth_token", None)
+if not s.get("auth_token"):
+    st.warning("You must log in to view settings.")
+    if st.button("Go to Login", key="settings_login"):
+        st.switch_page("pages/2_Login.py")
+    st.stop()
+
+# ---------- backend helpers ----------
+def api_get(path):
+    try:
+        r = requests.get(f"{BACKEND_URL}{path}", timeout=5,
+                         headers={"Authorization": f"Bearer {s.auth_token}"})
+    except requests.RequestException:
+        return None
+    if r.status_code == 401:
+        s.auth_token = None
+        st.switch_page("pages/2_Login.py")
+        st.stop()
+    return r.json() if r.status_code == 200 else None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_username(token: str) -> str:
+    try:
+        r = requests.get(f"{BACKEND_URL}/api/auth/me", timeout=5,
+                         headers={"Authorization": f"Bearer {token}"})
+        if r.status_code == 200:
+            return r.json().get("username") or "Gardener"
+    except requests.RequestException:
+        pass
+    return "Gardener"
+
+@st.cache_data(ttl=10, show_spinner=False)
+def backend_ok() -> bool:
+    try:
+        return requests.get(f"{BACKEND_URL}/health", timeout=2).status_code == 200
+    except requests.RequestException:
+        return False
+
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_sensors(token: str):
+    try:
+        r = requests.get(f"{BACKEND_URL}/api/sensors/my-sensors", timeout=5,
+                         headers={"Authorization": f"Bearer {token}"})
+        return r.json().get("sensors", []) if r.status_code == 200 else []
+    except requests.RequestException:
+        return []
+
+def lan_ip() -> str:
+    """This Mac's address on the current network (what the ESP32 must call)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("10.255.255.255", 1))   # no packet is sent
+            return sock.getsockname()[0]
+    except OSError:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return "unknown"
+
+def age_text(iso_str):
+    """(seconds_old or None, 'Xs ago') for a naive local-time ISO timestamp."""
+    if not iso_str:
+        return None, "No reading yet"
+    try:
+        ts = datetime.fromisoformat(str(iso_str))
+        if ts.tzinfo is not None:
+            ts = ts.astimezone().replace(tzinfo=None)
+    except ValueError:
+        return None, "No reading yet"
+    secs = max(0, int((datetime.now() - ts).total_seconds()))
+    if secs < 60:
+        return secs, f"{secs}s ago"
+    if secs < 3600:
+        return secs, f"{secs // 60}m ago"
+    return secs, f"{secs // 3600}h ago"
+
+# ---------- user + per-user settings ----------
+username = fetch_username(s.auth_token)
+SAVE_FILE = BASE / f"settings_{re.sub(r'[^A-Za-z0-9_-]', '_', username)}.json"
+
+if s.get("_settings_user") != username:
     saved = {}
     try:
-        saved = json.loads(SAVE_FILE.read_text())
+        saved = {k: v for k, v in json.loads(SAVE_FILE.read_text()).items() if k in DEFAULTS}
     except Exception:
         pass
-    s.update({**DEFAULTS, **saved})
-    s.wifi = ("ok", "Connected to GreenHouse_5G")
-    s.cal = [h[1] for h in HW]
+    s._saved = {**DEFAULTS, **saved}
+    s._settings_user = username
     s.manual_end = None
-    s.settings_init = True
+    s.unit = "°F" if s._saved["temp_unit"] == UNITS[1] else "°C"   # dashboard's own key
+
+# widget keys are deleted when you leave the page, so restore them every run
+for k, v in s._saved.items():
+    s.setdefault(k, v)
+
+# ---------- real device / hardware info ----------
+sensors = fetch_sensors(s.auth_token)
+sensor = sensors[0] if sensors else None
+reading_secs, reading_age = age_text(sensor.get("last_reading_at") if sensor else None)
+sensor_online = reading_secs is not None and reading_secs <= ONLINE_WITHIN_SECS
+
+pump_sub = "No plant yet"
+if sensor:
+    pump = api_get(f"/api/plants/{sensor['plant_id']}/pump-status") or {}
+    if pump.get("last_run"):
+        t = datetime.fromisoformat(pump["last_run"].replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Kolkata"))
+        pump_sub = f"Last run {t:%d %b, %I:%M %p}"
+    else:
+        pump_sub = "Never run"
+HW_SUB = [pump_sub,
+          f"Last reading {reading_age}",
+          f"Last reading {reading_age}" if (sensor and sensor.get("latest_temperature") is not None)
+          else "No temperature reading"]
 
 # ---------- styling ----------
 @st.cache_data
@@ -60,7 +165,7 @@ header[data-testid="stHeader"]{{background:transparent}}
 .lbl{{font-weight:500;color:var(--mute)}}
 .ro{{display:flex;align-items:center;background:#fff;border:2px solid var(--line);border-radius:20px;padding:8px 14px;min-height:44px}}
 .dot{{width:12px;height:12px;border-radius:50%;display:inline-block;flex:none;margin-left:auto}}
-.ok{{background:#2fc23a;box-shadow:0 0 8px #2fc23a}}.busy{{background:#e0a020;box-shadow:0 0 8px #e0a020}}.low{{background:#d9382c;box-shadow:0 0 8px #d9382c}}
+.ok{{background:#2fc23a;box-shadow:0 0 8px #2fc23a}}.busy{{background:#e0a020;box-shadow:0 0 8px #e0a020}}.low{{background:#d9382c;box-shadow:0 0 8px #d9382c}}.off{{background:#b8b8b8}}
 .status{{display:flex;align-items:center;gap:8px;color:var(--mute);font-size:.92rem}}.status .dot{{margin:0}}
 [data-baseweb="input"],[data-baseweb="base-input"],[data-baseweb="select"]>div{{background:#fff!important;border:2px solid var(--line)!important;border-radius:20px!important;overflow:hidden}}
 [data-testid="stWidgetLabel"] p{{font-weight:500;color:var(--mute)}}
@@ -102,31 +207,27 @@ def connect():
         st.toast("Enter a network name first", icon="⚠️"); return
     if len(s.pw) < 8:
         st.toast("Password must be at least 8 characters", icon="⚠️"); return
-    st.toast(f"Connecting to {s.ssid}…")
-    time.sleep(1.4)
-    s.wifi = ("ok", f"Connected to {s.ssid}")
-    st.toast("Network updated", icon="✅")
+    st.toast("The ESP32 gets its Wi-Fi from its firmware (config.h). Nothing was sent or stored from here.", icon="ℹ️")
 
 def toggle_manual():
     if s.manual_end:
-        s.manual_end = None; st.toast("Manual watering stopped")
+        s.manual_end = None; st.toast("Manual timer stopped")
     else:
         s.manual_end = time.time() + max(1, min(120, int(s.man))) * 60
-        st.toast("Manual watering started")
+        st.toast("Preview timer started. To actually water, use Water now on the dashboard.", icon="ℹ️")
 
 def calibrate(i):
-    st.toast(f"Calibrating {HW[i][0]}…")
-    time.sleep(1.6)
-    s.cal[i] = "Last calibrated just now"
-    st.toast(f"{HW[i][0]} calibrated", icon="✅")
+    st.toast("Calibration is set in the ESP32 firmware (DRY/WET values), not from this page.", icon="ℹ️")
 
 def save():
     if s.min_m >= s.max_m:
         st.toast("Minimum must be below maximum", icon="⚠️"); return
     if not s.dname.strip():
         st.toast("Enter a device name", icon="⚠️"); return
+    s._saved = {k: s[k] for k in DEFAULTS}
+    s.unit = "°F" if s.temp_unit == UNITS[1] else "°C"   # applies on the dashboard
     try:
-        SAVE_FILE.write_text(json.dumps({k: s[k] for k in DEFAULTS}))
+        SAVE_FILE.write_text(json.dumps(s._saved))
     except Exception:
         pass
     st.toast("Settings saved", icon="✅")
@@ -138,9 +239,9 @@ def reset():
 # ---------- header ----------
 if st.button("← Back to Dashboard"):
     st.switch_page("pages/6_Dashboard.py")
-    
-st.markdown("""<div class="top"><h1> Settings</h1>
-<div class="user"><div class="av"><svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7z"/></svg></div>Alice Green</div></div>""", unsafe_allow_html=True)
+
+st.markdown(f"""<div class="top"><h1> Settings</h1>
+<div class="user"><div class="av"><svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7z"/></svg></div>{escape(username)}</div></div>""", unsafe_allow_html=True)
 
 # ---------- network + device ----------
 left, right = st.columns([7, 5], gap="medium")
@@ -152,25 +253,29 @@ with left:
         with row("Password"):
             st.text_input("Password", key="pw", type="password", placeholder="Password", label_visibility="collapsed")
         c1, c2 = st.columns([3, 2], vertical_alignment="center")
-        state, msg = s.wifi
-        c1.markdown(f'<div class="status"><i class="dot {state}"></i>{msg}</div>', unsafe_allow_html=True)
+        ok = backend_ok()
+        c1.markdown(f'<div class="status"><i class="dot {"ok" if ok else "low"}"></i>'
+                    f'{"Backend reachable" if ok else "Backend not reachable"}</div>', unsafe_allow_html=True)
         c2.button("Connect / Update", type="primary", on_click=connect, use_container_width=True)
+        st.caption(f"Device server URL: "
+                   f"http://{lan_ip()}:8000/api/sensor-data/upload")
 with right:
     with st.container(key="card_dev"):
         heading("info", "Device Information")
         with row("Device name"):
             st.text_input("Device name", key="dname", label_visibility="collapsed", max_chars=32)
         with row("Device ID"):
-            st.markdown('<div class="ro">SIS-ALPHA-001</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="ro">{escape(sensor["sensor_id"]) if sensor else "No sensor yet"}</div>', unsafe_allow_html=True)
         with row("Firmware version"):
-            st.markdown('<div class="ro">2.1.0</div>', unsafe_allow_html=True)
+            st.markdown('<div class="ro">Not reported</div>', unsafe_allow_html=True)
         with row("Battery level"):
-            cls = "ok" if BATT >= 50 else "busy" if BATT >= 20 else "low"
-            st.markdown(f'<div class="ro">{BATT}%<i class="dot {cls}"></i></div>', unsafe_allow_html=True)
+            st.markdown('<div class="ro">Not reported<i class="dot off"></i></div>', unsafe_allow_html=True)
 
 # ---------- thresholds ----------
 with st.container(key="card_auto"):
     heading("auto", "Thresholds &amp; Automation")
+    st.caption("Preview only: the backend currently waters below a fixed 35% soil moisture and "
+               "skips on rain or a >50% forecast. These values are saved for you but not sent to the device yet.")
     a, b = st.columns([1.5, 1], gap="large")
     with a:
         st.slider("Minimum soil moisture (start watering)", 10, 50, key="min_m", on_change=on_min, format="%d%%")
@@ -183,7 +288,7 @@ with st.container(key="card_auto"):
         with st.container(key="mode_box"):
             with row("Manual override (min)", (1.4, 1)):
                 st.number_input("Manual", 1, 120, key="man", label_visibility="collapsed")
-            st.button("Stop watering" if s.manual_end else "Start manual watering", type="primary", on_click=toggle_manual)
+            st.button("Stop timer" if s.manual_end else "Start manual watering", type="primary", on_click=toggle_manual)
 
             @st.fragment(run_every="1s" if s.manual_end else None)
             def countdown():
@@ -191,26 +296,30 @@ with st.container(key="card_auto"):
                     left_s = int(s.manual_end - time.time())
                     if left_s <= 0:
                         s.manual_end = None
-                        st.toast("Manual watering finished")
+                        st.toast("Preview timer finished")
                         st.rerun()
-                    st.caption(f"Watering – {left_s // 60}:{left_s % 60:02d} left")
+                    st.caption(f"Preview timer – {left_s // 60}:{left_s % 60:02d} left")
             countdown()
 
 # ---------- hardware ----------
 with st.container(key="card_hw"):
     heading("hw", "Sensors &amp; Hardware")
-    for i, (name, _) in enumerate(HW):
+    for i, name in enumerate(HW):
         with st.container(key=f"hw_{i}"):
             c1, c2, c3 = st.columns([6, 2, 0.5], vertical_alignment="center")
-            c1.markdown(f'<div class="hwn">{name}<small>{s.cal[i]}</small></div>', unsafe_allow_html=True)
+            c1.markdown(f'<div class="hwn">{name}<small>{escape(HW_SUB[i])}</small></div>', unsafe_allow_html=True)
             c2.button("Calibrate", key=f"cal_{i}", type="primary", on_click=calibrate, args=(i,), use_container_width=True)
-            c3.markdown('<i class="dot ok"></i>', unsafe_allow_html=True)
+            if i == 0:
+                dot = "off"                       # pump state isn't observable, only commands
+            else:
+                dot = "ok" if sensor_online else "low"
+            c3.markdown(f'<i class="dot {dot}"></i>', unsafe_allow_html=True)
 
 # ---------- units ----------
 with st.container(key="card_units"):
     heading("geo", "Units &amp; Local")
     u1, u2, u3 = st.columns(3, gap="large")
-    u1.selectbox("Temperature unit", UNITS, key="unit")
+    u1.selectbox("Temperature unit", UNITS, key="temp_unit")
     u2.selectbox("Language", LANGS, key="lang")
     u3.selectbox("Time zone", ZONES, key="tz")
 

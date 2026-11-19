@@ -5,8 +5,6 @@ from app.config import settings
 
 OPENWEATHER_URL = "https://api.openweathermap.org/data/2.5/forecast"
 
-
-
 def fetch_weather_forecast(city_name: str = "Mumbai") -> dict:
     """
     Fetch weather forecast from OpenWeather.
@@ -125,3 +123,17 @@ def fetch_weather_forecast(city_name: str = "Mumbai") -> dict:
             "temperature": None,
             "error": str(e)
         }
+import time
+
+_cache = {}  # city -> (fetched_at, data)
+
+def get_cached_forecast(city: str, max_age_minutes: int = 10) -> dict:
+    """Return the forecast, refetching only if the cached copy is stale."""
+    now = time.time()
+    hit = _cache.get(city)
+    if hit and now - hit[0] < max_age_minutes * 60:
+        return hit[1]
+    data = fetch_weather_forecast(city)
+    if data.get("available"):           # don't cache failures
+        _cache[city] = (now, data)
+    return data

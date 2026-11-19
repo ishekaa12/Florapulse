@@ -1,26 +1,34 @@
 import base64
-import math
-import random
 import re
-import time as _time
-from datetime import datetime, time, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-import streamlit as st
 import requests
+import streamlit as st
 
 st.set_page_config(
     page_title="Smart Garden | Dashboard",
     page_icon="🌱",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 
 # ==================================================
-# BACKEND CONFIG
+# CONFIG
 # ==================================================
 BACKEND_URL = "http://localhost:8000"
+WATER_THRESHOLD = 35  # matches backend settings.moisture_threshold_dry
+
+# Edit here if you rename pages (e.g. 9_Sensors.py -> 10_Sensors.py)
+PAGES = {
+    "Settings": "pages/10_Settings.py",
+    "Analytics": "pages/11_Analytics.py",
+    "Sensors": "pages/9_Sensors.py",
+    "Weather Forecast": "pages/12_Weather.py",
+    "About us": "pages/7_About.py",
+    "Profile": "pages/8_Profile.py",
+}
 
 # ==================================================
 # AUTH GUARD
@@ -28,7 +36,7 @@ BACKEND_URL = "http://localhost:8000"
 if st.session_state.get("auth_token") is None:
     st.markdown(
         "<div style='text-align: center; padding: 50px;'><h2>You must login first</h2></div>",
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
     if st.button("Go to Login"):
         st.switch_page("pages/2_Login.py")
@@ -45,26 +53,9 @@ NAV = [
     ("Sensors", "📡"),
     ("Analytics", "📊"),
     ("About us", "ℹ️"),
-    ("Settings", "⚙️")
+    ("Settings", "⚙️"),
 ]
-ART = {
-    "plant": "plant.png",
-    "can": "watering_can.png",
-    "pump": "pump.png"
-}
-CITIES = {
-    "Mumbai": (30, 80, .6),
-    "Delhi": (33, 55, .25),
-    "Bengaluru": (27, 70, .45),
-    "Chennai": (33, 72, .35),
-    "Kolkata": (32, 78, .5),
-    "London": (16, 72, .4),
-    "New York": (21, 60, .3)
-}
-KEEP = [
-    "mode", "thr", "pump_on", "sched", "auto_sched",
-    "unit", "city", "live", "sel_plant", "metric"
-]
+ART = {"plant": "plant.png", "can": "watering_can.png", "pump": "pump.png"}
 
 LAYOUT = {
     "nav": (0, 0, 227, 697),
@@ -73,137 +64,102 @@ LAYOUT = {
     "weather": (957, 40, 325, 503),
     "pump": (268, 372, 689, 171),
     "sensors": (268, 573, 1014, 124),
-    "panel": (268, 40, 1014, 657)
+    "panel": (268, 40, 1014, 657),
 }
 
-clamp = lambda v, lo, hi: max(lo, min(hi, v))
-
 # ==================================================
-# BACKEND API FUNCTIONS
+# BACKEND API
 # ==================================================
-def load_plants_from_backend(token: str) -> dict:
-    """Fetch plants from backend and convert to dashboard format"""
+def api(method: str, path: str, **kw):
+    """Call the backend. Returns (json, error). A 401 sends the user to login."""
+    token = st.session_state.get("auth_token")
     try:
-        if not token:
-            st.error("No auth token available")
-            return {}
-
-        headers = {"Authorization": f"Bearer {token}"}
-        response = requests.get(
-            f"{BACKEND_URL}/api/plants/my-plants",
-            headers=headers,
-            timeout=10
+        r = requests.request(
+            method,
+            f"{BACKEND_URL}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=8,
+            **kw,
         )
+    except requests.exceptions.RequestException:
+        return None, "Cannot reach backend. Is it running?"
 
-        if response.status_code == 401:
-            st.session_state.auth_token = None
-            st.toast("Session expired, please login again")
-            st.switch_page("pages/2_Login.py")
-            st.stop()
+    if r.status_code == 401:
+        st.session_state.auth_token = None
+        st.toast("Session expired, please log in again")
+        st.switch_page("pages/2_Login.py")
+        st.stop()
 
-        if response.status_code != 200:
-            st.error(f"Failed to load plants (status {response.status_code}): {response.text}")
-            return {}
+    if r.status_code >= 400:
+        try:
+            return None, r.json().get("detail", f"Error {r.status_code}")
+        except ValueError:
+            return None, f"Error {r.status_code}"
 
-        data = response.json()
-        backend_plants = data.get("plants", [])
-        plants_dict = {}
+    try:
+        return r.json(), None
+    except ValueError:
+        return None, "Bad response from backend"
 
-        for plant in backend_plants:
-            name = plant.get("name", f"Plant {plant.get('id')}")
-            plants_dict[name] = {
-                "id": plant.get("id"),
-                "emoji": "🌱",
-                "mlo": 30,
-                "mhi": 70,
-                "tlo": 16,
-                "thi": 30,
-                "moisture": 0,
-                "temp": 0,
-                "hum": 0,
-                "light": 0,
-                "hist": []
-            }
 
-        return plants_dict
-
-    except Exception as e:
-        st.error(f"Error loading plants: {str(e)}")
+def load_plants_from_backend() -> dict:
+    data, err = api("GET", "/api/plants/my-plants")
+    if err:
+        st.error(f"Could not load plants: {err}")
         return {}
+    plants = {}
+    for p in data.get("plants", []):
+        name = p.get("name", f"Plant {p.get('id')}")
+        plants[name] = {
+            "id": p.get("id"), "emoji": "🌱",
+            "mlo": 30, "mhi": 70, "tlo": 16, "thi": 30,
+            "moisture": 0, "temp": 0, "hum": 0, "rain": False,
+            "has_data": False, "last_ts": None, "hist": [],
+        }
+    return plants
 
 
-def load_sensor_history(plant_id: int, token: str, limit: int = 60) -> list:
-    """Fetch sensor reading history from backend"""
-    try:
-        headers = {"Authorization": f"Bearer {token}"}
-        response = requests.get(
-            f"{BACKEND_URL}/api/sensor-data/history?plant_id={plant_id}&limit={limit}",
-            headers=headers,
-            timeout=10
-        )
+def load_sensor_history(plant_id: int, limit: int = 60) -> list:
+    data, _ = api("GET", "/api/sensor-data/history",
+                  params={"plant_id": plant_id, "limit": limit})
+    readings = (data or {}).get("readings", [])
+    # Oldest first, so readings[-1] is always the latest
+    return sorted(readings, key=lambda r: str(r.get("timestamp", "")))
 
-        if response.status_code == 401:
-            st.session_state.auth_token = None
-            st.toast("Session expired")
-            st.switch_page("pages/2_Login.py")
-            st.stop()
 
-        if response.status_code != 200:
-            return []
+def load_prediction(plant_id: int) -> dict:
+    data, _ = api("GET", f"/api/plants/{plant_id}/next-watering-prediction")
+    return data or {}
 
-        readings = response.json().get("readings", [])
-        return readings
 
-    except Exception as e:
-        st.warning(f"Could not load sensor history: {e}")
-        return []
+def load_pump(plant_id: int) -> dict:
+    data, _ = api("GET", f"/api/plants/{plant_id}/pump-status")
+    return data or {}
 
-def load_next_watering_prediction(plant_id: int, token: str) -> dict:
-    """Fetch next watering prediction from backend."""
-    try:
-        headers = {"Authorization": f"Bearer {token}"}
 
-        response = requests.get(
-            f"{BACKEND_URL}/api/plants/{plant_id}/next-watering-prediction",
-            headers=headers,
-            timeout=10
-        )
+def load_decision(plant_id: int) -> dict:
+    data, _ = api("GET", f"/api/plants/{plant_id}/latest-decision")
+    return data or {}
 
-        if response.status_code == 401:
-            st.session_state.auth_token = None
-            st.toast("Session expired")
-            st.switch_page("pages/2_Login.py")
-            st.stop()
 
-        if response.status_code != 200:
-            st.warning(
-                f"Could not load watering prediction "
-                f"(status {response.status_code})"
-            )
-            return {}
+@st.cache_data(ttl=300, show_spinner=False)
+def _weather_cached(token: str) -> dict:
+    # token is only the cache key; the call itself reads it from session state
+    data, _ = api("GET", "/api/weather/current")
+    return data or {}
 
-        return response.json()
 
-    except Exception as e:
-        st.warning(f"Could not load watering prediction: {e}")
-        return {}
+def load_weather() -> dict:
+    w = _weather_cached(st.session_state.auth_token)
+    if not w:
+        _weather_cached.clear()  # don't keep a failed result for 5 minutes
+    return w
 
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_current_user(token: str) -> str:
-    """Get logged-in user name from backend"""
-    try:
-        headers = {"Authorization": f"Bearer {token}"}
-        response = requests.get(
-            f"{BACKEND_URL}/api/auth/me",
-            headers=headers,
-            timeout=10
-        )
-
-        if response.status_code == 200:
-            return response.json().get("username", "Gardener")
-    except:
-        pass
-
-    return "Gardener"
+    data, _ = api("GET", "/api/auth/me")
+    return (data or {}).get("username", "Gardener")
 
 # ==================================================
 # STYLES
@@ -237,13 +193,10 @@ header,[data-testid="stHeader"],[data-testid="stToolbar"],[data-testid="stDecora
 .sub{font-size:@{14};color:var(--mute)}
 [data-testid="stWidgetLabel"] p{font-size:@{14};color:var(--mute)}
 [data-baseweb="select"]>div{min-height:@{38};height:@{38};border-radius:@{12};background:var(--soft);border-color:#b9d98f}
-[data-baseweb="select"] *,[data-testid="stTimeInput"] input{font-size:@{15}}
-[data-testid="stTimeInput"] [data-baseweb="input"]{border-radius:@{12};background:var(--soft)}
-[data-testid="stTimeInput"] input{height:@{38};background:var(--soft)}
+[data-baseweb="select"] *{font-size:@{15}}
 [data-testid="stCaptionContainer"] p,[data-testid="stToggle"] p,[data-testid="stRadio"] label p{font-size:@{14};color:var(--ink)}
 [data-baseweb="checkbox"]:has(input:checked)>:is(div,span):first-child{background:var(--good)!important}
 [data-baseweb="radio"]:has(input:checked)>:is(div,span):first-child{background:var(--good)!important;border-color:var(--good)!important}
-[data-baseweb="slider"] [role="slider"]{background:var(--good)!important;box-shadow:none!important}
 
 .art{flex:none;background:center / contain no-repeat}
 %%ART%%
@@ -286,24 +239,32 @@ header,[data-testid="stHeader"],[data-testid="stToolbar"],[data-testid="stDecora
 .stats div{display:flex;justify-content:space-between;align-items:center;background:var(--soft);border-radius:@{12};padding:@{6} @{12};font-size:@{14};color:var(--mute)}
 .stats b{font-size:@{17};font-weight:500;color:var(--ink)}
 
-.wtop{display:flex;align-items:center;justify-content:space-between;min-height:@{92}}
+.wtop{display:flex;align-items:center;justify-content:space-between;min-height:@{60}}
+.pbox{background:var(--soft);border-radius:@{14};padding:@{8} @{12};font-size:@{15};font-weight:700;line-height:1.25}
+.pbox small{display:block;font-weight:400;font-size:@{13};color:var(--mute)}
+.pmini{display:grid;grid-template-columns:1fr 1fr;gap:@{8};margin-top:@{6}}
+.pmini div{background:var(--soft);border-radius:@{12};padding:@{6} @{10};font-size:@{13};color:var(--mute);text-align:center}
+.pmini b{display:block;font-size:@{17};font-weight:500;color:var(--ink);font-family:var(--head)}
 
 .wnow{display:flex;align-items:center;justify-content:center;gap:@{12};min-height:@{54}}
 .wnow span{font-size:@{40}}.wnow b{font-size:@{38};font-weight:500}
 .chips{display:grid;grid-template-columns:repeat(3,1fr);gap:@{8}}
 .chips div{text-align:center;font-size:@{13};color:var(--mute);background:var(--soft);border-radius:@{12};padding:@{5} 0}
 .chips b{display:block;font-size:@{17};font-weight:500;color:var(--ink)}
-.wlist{display:flex;flex-direction:column}
-.wrow{display:grid;grid-template-columns:1fr .5fr 1.6fr 1fr;align-items:center;font-size:@{15};height:@{31};padding:0 @{10};border-radius:@{10}}
-.wrow:nth-child(odd){background:var(--soft)}
 .tip{font-size:@{14};background:#fff6dc;border-radius:@{12};padding:@{7} @{12};line-height:1.3}
+.src{font-size:@{12};color:var(--mute);text-align:center}
 
 .pst{display:flex;align-items:center;gap:@{14}}.pst b{font-size:@{26};font-weight:500;display:block;line-height:1.1}
 .pst small{font-size:@{14};color:var(--mute)}
 .dot{flex:none;width:@{40};height:@{40};border-radius:50%;background:#cfd8c3}
 .dot.on{background:var(--good);animation:pulse 1.6s infinite}
+.dot.q{background:var(--warn)}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(106,170,74,.55)}100%{box-shadow:0 0 0 @{16} rgba(106,170,74,0)}}
 @media (prefers-reduced-motion:reduce){.dot.on{animation:none}}
+.dec{font-size:@{14};line-height:1.3}
+.dec b{font-family:var(--head);font-size:@{18};font-weight:500}
+.dec small{display:block;color:var(--mute);font-size:@{12}}
+.badge{display:inline-block;background:var(--soft);border-radius:999px;padding:@{3} @{12};font-size:@{13};color:var(--ink);margin-top:@{4}}
 
 .sens{display:grid;grid-template-columns:@{160} repeat(5,1fr);gap:@{22};align-items:center}
 .stt b{display:block;font-size:@{20};font-weight:500;line-height:1.1}
@@ -321,12 +282,12 @@ header,[data-testid="stHeader"],[data-testid="stToolbar"],[data-testid="stDecora
 
 
 def inject_css():
-    uri = bg_uri()
     rules = "".join(
         f".st-key-{k}{{left:@{{{x}}};top:@{{{y}}};width:@{{{w}}};height:@{{{h}}}}}"
         for k, (x, y, w, h) in LAYOUT.items()
     )
-    css = CSS.replace("%%BG%%", uri).replace("%%ART%%", art_css()).replace("</style>", rules + "</style>")
+    css = (CSS.replace("%%BG%%", bg_uri()).replace("%%ART%%", art_css())
+              .replace("</style>", rules + "</style>"))
     css = re.sub(r"@\{(\d+(?:\.\d+)?)\}", r"calc(var(--u) * \1)", css)
     st.markdown(css, unsafe_allow_html=True)
 
@@ -339,10 +300,8 @@ def art_css() -> str:
         p = ASSETS / fname
         if p.exists():
             w, h = size[key]
-            out += (
-                f".art-{key}{{width:@{{{w}}};height:@{{{h}}};"
-                f"background-image:url(data:image/png;base64,{base64.b64encode(p.read_bytes()).decode()})}}"
-            )
+            out += (f".art-{key}{{width:@{{{w}}};height:@{{{h}}};"
+                    f"background-image:url(data:image/png;base64,{base64.b64encode(p.read_bytes()).decode()})}}")
     return out
 
 
@@ -356,7 +315,7 @@ def bg_uri() -> str:
     return "linear-gradient(160deg,#e9f7df,#f3fbee 50%,#d8f0c4)"
 
 # ==================================================
-# HELPER FUNCTIONS
+# HELPERS
 # ==================================================
 def health(p: dict) -> int:
     fit = lambda v, lo, hi, tol: 1 - min(1, max(lo - v, v - hi, 0) / tol)
@@ -370,59 +329,45 @@ def health(p: dict) -> int:
 def status(score: int):
     if score >= 80:
         return ("Thriving", "var(--good)")
-    elif score >= 60:
+    if score >= 60:
         return ("Doing okay", "var(--warn)")
-    else:
-        return ("Needs care", "var(--bad)")
-
-
-def get_forecast(city: str, days: int = 5) -> list:
-    """SAMPLE DATA - swap for a real API call"""
-    base, hum, rain = CITIES[city]
-    r = random.Random(f"{city}{datetime.now():%Y%m%d}")
-    out = []
-    for i in range(days):
-        pr = int(clamp(rain * 100 + r.uniform(-35, 35), 5, 95))
-        hi = base + r.uniform(-2, 2) - (3 if pr > 60 else 0)
-        out.append({
-            "day": "Today" if i == 0 else (datetime.now() + timedelta(i)).strftime("%a"),
-            "hi": hi,
-            "lo": hi - r.uniform(4, 7),
-            "rain": pr,
-            "hum": int(hum + r.uniform(-8, 8)),
-            "wind": int(r.uniform(6, 22)),
-            "icon": "🌧️" if pr >= 60 else "⛅" if pr >= 30 else "☀️"
-        })
-    return out
+    return ("Needs care", "var(--bad)")
 
 
 def T(c: float) -> str:
-    if st.session_state.unit == "°F":
+    if st.session_state.get("unit", "°C") == "°F":
         return f"{c * 9 / 5 + 32:.0f}°F"
-    else:
-        return f"{c:.0f}°C"
+    return f"{c:.0f}°C"
+
 
 
 def html(s: str) -> None:
     st.markdown(s, unsafe_allow_html=True)
+
+def placeholder(key: str, title: str) -> None:
+    with st.container(key=key):
+        html(f'<div class="h">{title}</div><div class="sub">Select a plant to see this.</div>')    
+
+
+def pick(d: dict, *keys, default=None):
+    """First key present in d with a non-None value (tolerates backend key naming)."""
+    for k in keys:
+        if d.get(k) is not None:
+            return d[k]
+    return default
+
+
+def current_plant_id():
+    ss = st.session_state
+    return (ss.plants.get(ss.sel_plant) or {}).get("id")
 
 # ==================================================
 # CALLBACKS
 # ==================================================
 def go(view: str) -> None:
     st.session_state.view = view
-    
-    page_map = {
-        "Settings": "pages/10_Settings.py",
-        "Analytics": "pages/11_Analytics.py",
-        "Sensors": "pages/9_Sensors.py",
-        "Weather Forecast": "pages/12_Weather.py",
-        "About us": "pages/7_About.py",
-        "Profile": "pages/8_Profile.py"
-    }
-    
-    if view in page_map:
-        st.switch_page(page_map[view])
+    if view in PAGES:
+        st.switch_page(PAGES[view])
 
 
 def open_plant(name: str) -> None:
@@ -431,7 +376,15 @@ def open_plant(name: str) -> None:
 
 
 def water_now() -> None:
-    st.toast("Watering command sent! 💧")
+    pid = current_plant_id()
+    if not pid:
+        st.toast("⚠️ No plant selected")
+        return
+    _, err = api("POST", f"/api/plants/{pid}/water-now")
+    if err:
+        st.toast(f"⚠️ {err}")
+    else:
+        st.toast("✅ Queued. Pump starts at the device's next check-in (≤30s)")
 
 
 def logout() -> None:
@@ -440,35 +393,25 @@ def logout() -> None:
     st.switch_page("pages/2_Login.py")
 
 # ==================================================
-# CARD COMPONENTS
+# CARDS
 # ==================================================
-def user_name() -> str:
-    return get_current_user(st.session_state.auth_token)
-
-
 def nav() -> None:
     ss = st.session_state
     with st.container(key="nav"):
         html('<div class="brand"><i>🌱</i>Smart Garden</div>')
         for n, icon in NAV:
-            clicked = st.button(
-                n,
-                key=f"nav_{n}",
-                icon=icon,
-                type="primary" if ss.view == n else "secondary"
-            )
-            if clicked:
+            if st.button(n, key=f"nav_{n}", icon=icon,
+                         type="primary" if ss.view == n else "secondary"):
                 go(n)
         with st.container(key="snapwrap"):
-            plant_count = len(ss.plants) if ss.plants else 0
-            html(f'<div class="snap"><b>{datetime.now():%a, %d %b}</b>{plant_count} plants linked</div>')
+            html(f'<div class="snap"><b>{datetime.now():%a, %d %b}</b>{len(ss.plants)} plants linked</div>')
         st.toggle("Live updates", key="live")
         if st.button("Log out", key="logout", icon="🚪"):
             logout()
 
 
 def profile() -> None:
-    name = user_name()
+    name = get_current_user(st.session_state.auth_token)
     with st.container(key="profile"):
         html(f'<div class="greet">Hi, {name}</div>')
         with st.popover(name[0].upper(), help="Your profile"):
@@ -482,31 +425,23 @@ def profile() -> None:
 
 def card_health() -> None:
     ss = st.session_state
-    if not ss.plants:
-        st.error("No plants available")
-        return
-
     with st.container(key="health"):
-        html(
-            '<div class="hdr"><div><div class="h">Plant health</div>'
-            '<div class="sub">Pick a plant to inspect</div></div>'
-            '<div class="art art-plant"></div></div>'
-        )
-        name = st.selectbox(
-            "Plant",
-            list(ss.plants),
-            key="sel_plant",
-            label_visibility="collapsed",
-            index=0
-        )
-        if not name:
-            name = list(ss.plants.keys())[0]
+        html('<div class="hdr"><div><div class="h">Plant health</div>'
+             '<div class="sub">Pick a plant to inspect</div></div>'
+             '<div class="art art-plant"></div></div>')
+        name = st.selectbox("Plant", list(ss.plants), key="sel_plant", index=None,
+                            placeholder="Select a plant", label_visibility="collapsed")
+        if name is None:
+            html('<div class="sub">Choose a plant to see its readings.</div>')
+            return
         p = ss.plants[name]
+        if not p["has_data"]:
+            html('<div class="sub">Waiting for the first sensor reading…</div>')
+            return
         s = health(p)
         lab, col = status(s)
         html(
-            f'<div class="hrow"><div class="ring" style="--s:{s};--c:{col}"><b>{s}</b>'
-            f'<span>{lab}</span></div>'
+            f'<div class="hrow"><div class="ring" style="--s:{s};--c:{col}"><b>{s}</b><span>{lab}</span></div>'
             f'<div class="stats"><div>Soil<b>{p["moisture"]:.0f}%</b></div>'
             f'<div>Air<b>{T(p["temp"])}</b></div>'
             f'<div>Humidity<b>{p["hum"]:.0f}%</b></div></div></div>'
@@ -514,395 +449,250 @@ def card_health() -> None:
 
 
 def card_water() -> None:
-    ss = st.session_state
-
-    if not ss.plants or ss.sel_plant not in ss.plants:
-        st.error("Plant data not available")
-        return
-
-    plant_id = ss.plants[ss.sel_plant].get("id")
-
-    prediction = {}
-
-    if plant_id:
-        prediction = load_next_watering_prediction(
-            plant_id,
-            ss.auth_token
-        )
+    plant_id = current_plant_id()
+    pred = load_prediction(plant_id) if plant_id else {}
 
     with st.container(key="water"):
+        html('<div class="wtop"><div class="h">Next watering</div><div class="art art-can"></div></div>')
 
-        html(
-            '<div class="wtop">'
-            '<div>'
-            '<div class="h">Next watering</div>'
-            '</div>'
-            '<div class="art art-can"></div>'
-            '</div>'
-        )
-
-        if prediction:
-
-            status_value = prediction.get("status")
-            hours = prediction.get("next_watering_in_hours")
-            friendly_time = prediction.get(
-                "estimated_time_friendly"
-            )
-
-            if status_value == "WATER_NOW":
-
-                st.error("💧 WATER NOW")
-
-            elif status_value == "WATER_SOON":
-
-                st.warning(
-                    f"💧 Water soon — {hours:.1f} hours"
-                )
-
-            elif hours is not None:
-
-                if hours > 8:
-                    st.success(
-                        f"🌱 Next watering in {hours:.1f} hours"
-                    )
-
-                elif hours >= 4:
-                    st.warning(
-                        f"💧 Next watering in {hours:.1f} hours"
-                    )
-
-                else:
-                    st.error(
-                        f"🔴 Watering in {hours:.1f} hours"
-                    )
-
+        if pred:
+            st_val = pred.get("status")
+            hours = pred.get("next_watering_in_hours")
+            when = pred.get("estimated_time_friendly")
+            if st_val == "WATER_NOW":
+                st.error("💧 Water now")
+            elif hours is None:
+                st.info("🌱 Moisture stable, no watering needed soon")
+            elif st_val == "WATER_SOON" or hours < 4:
+                st.error(f"🔴 In {hours:.1f} h" + (f" · {when}" if when else ""))
+            elif hours < 8:
+                st.warning(f"💧 In {hours:.1f} h" + (f" · {when}" if when else ""))
             else:
+                st.success(f"🌱 In {hours:.1f} h" + (f" · {when}" if when else ""))
 
-                st.info("🌱 Plant is stable")
-
-            if friendly_time:
-                st.caption(
-                    f"Estimated: {friendly_time}"
-                )
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                moisture = prediction.get("current_moisture")
-
-                if moisture is not None:
-                    st.metric(
-                        "Moisture",
-                        f"{moisture:.0f}%"
-                    )
-
-            with col2:
-                rate = prediction.get(
-                    "depletion_rate_per_hour"
-                )
-
-                if rate is not None:
-                    st.metric(
-                        "Drying rate",
-                        f"{rate:.2f}%/hr"
-                    )
-
-            confidence = prediction.get("confidence")
-
-            if confidence is not None:
-                st.caption(
-                    f"Prediction confidence: {confidence}%"
-                )
-
-        else:
-
-            st.info(
-                "Waiting for enough sensor data "
-                "to predict watering."
+            rate = pred.get("depletion_rate_per_hour")
+            conf = pred.get("confidence")
+            if conf is not None and conf <= 1:
+                conf *= 100
+            html(
+                '<div class="pmini">'
+                f'<div><b>{rate:.2f}%/h</b>drying rate</div>' if rate is not None else '<div><b>–</b>drying rate</div>'
             )
+            html(f'<div><b>{conf:.0f}%</b>confidence</div></div>' if conf is not None
+                 else '<div><b>–</b>confidence</div></div>')
+        else:
+            st.info("Waiting for enough sensor data to predict watering.")
 
-        st.divider()
-
-        # Existing manual watering controls
-        now = datetime.now()
-        nxt = datetime.combine(now.date(), ss.sched)
-        nxt = nxt if nxt > now else nxt + timedelta(days=1)
-
-        h, m = divmod(
-            int((nxt - now).total_seconds() // 60),
-            60
-        )
-
-        a, b = st.columns(
-            [1.1, 1],
-            vertical_alignment="bottom"
-        )
-
-        a.time_input(
-            "Water daily at",
-            key="sched",
-            step=300
-        )
-
-        b.toggle(
-            "Follow schedule",
-            key="auto_sched"
-        )
-
-        st.button(
-            "Water now",
-            key="water_now",
-            icon="💧",
-            on_click=water_now
-        )
+        st.button("Water now", key="water_now", icon="💧", on_click=water_now)
 
 
 def card_weather() -> None:
-    ss = st.session_state
+    w = load_weather()
     with st.container(key="weather"):
         html('<div class="h">Weather forecast</div>')
-        a, b = st.columns([3, 2], vertical_alignment="center")
-        a.selectbox("City", list(CITIES), key="city", label_visibility="collapsed")
-        b.radio("Unit", ["°C", "°F"], key="unit", horizontal=True, label_visibility="collapsed")
+        st.radio("Unit", ["°C", "°F"], key="unit", horizontal=True, label_visibility="collapsed")
 
-        fc = get_forecast(ss.city)
-        n = fc[0]
+        if not w or not w.get("available", True):
+            html('<div class="tip">⚠️ Weather unavailable. Irrigation falls back to the sensor-only rule.</div>')
+            return
+
+        rain_p = pick(w, "rain_probability", default=0)
+        temp = pick(w, "temp", "temperature")
+        clouds = pick(w, "cloud_coverage", "clouds")
+        rain_mm = pick(w, "rainfall_mm", "rain_mm")
+        icon = "🌧️" if rain_p >= 60 else "⛅" if rain_p >= 30 else "☀️"
+        fmt = lambda v, suf: f"{v:.0f}{suf}" if isinstance(v, (int, float)) else "–"
+
         html(
-            f'<div class="wnow"><span>{n["icon"]}</span><b>{T(n["hi"])}</b></div>'
-            f'<div class="chips"><div><b>{n["hum"]}%</b>humidity</div>'
-            f'<div><b>{n["wind"]} km/h</b>wind</div>'
-            f'<div><b>{n["rain"]}%</b>rain</div></div>'
-            '<div class="wlist">'
-            + "".join(
-                f'<div class="wrow"><span>{d["day"]}</span><span>{d["icon"]}</span>'
-                f'<span>{T(d["hi"])} / {T(d["lo"])}</span><span>💧 {d["rain"]}%</span></div>'
-                for d in fc
-            )
-            + '</div>'
+            f'<div class="wnow"><span>{icon}</span><b>{T(temp) if isinstance(temp, (int, float)) else "–"}</b></div>'
+            f'<div class="chips"><div><b>{rain_p:.0f}%</b>rain (24h)</div>'
+            f'<div><b>{fmt(clouds, "%")}</b>clouds</div>'
+            f'<div><b>{fmt(rain_mm, " mm")}</b>rainfall</div></div>'
         )
-        wet = next((d["day"] for d in fc[:3] if d["rain"] >= 60), None)
-        when = "today" if wet == "Today" else wet
-        tip = f"Rain likely {when}: consider skipping watering." if wet else "Dry days ahead: keep your watering schedule."
+        if rain_p > 50:
+            tip = "Rain likely in the next 24 h. Automatic watering will skip."
+        else:
+            tip = "Low rain chance. Automatic watering will follow soil moisture."
         html(f'<div class="tip">💡 {tip}</div>')
+        html(f'<div class="src">Live · OpenWeather · {w.get("city", "Mumbai")} · updates every ~10 min</div>')
 
 
 def card_pump() -> None:
-    ss = st.session_state
+    plant_id = current_plant_id()
+    pump = load_pump(plant_id) if plant_id else {}
+    dec = load_decision(plant_id) if plant_id else {}
+
+    if not pump:
+        state, sub, dot = "–", "Pump status unavailable", ""
+    elif pump.get("active"):
+        state, sub, dot = "ON", "Watering now", "on"
+    elif pump.get("pending_manual"):
+        state, sub, dot = "QUEUED", "Waiting for device check-in", "q"
+    else:
+        state = "OFF"
+        sub = f"Cooldown {pump['cooldown_minutes']} min" if pump.get("cooldown_minutes") else "Idle"
+        dot = ""
+
+    last = "Never"
+    if pump.get("last_run"):
+        last = (pd.to_datetime(pump["last_run"], utc=True)
+                .tz_convert("Asia/Kolkata").strftime("%d %b, %I:%M %p"))
+
     with st.container(key="pump"):
-        art, a, b, c = st.columns([.75, 1.25, 1.15, 1.5], vertical_alignment="center")
+        art, a, b, c = st.columns([.75, 1.25, 1.15, 1.6], vertical_alignment="center")
         with art:
             html('<div class="art art-pump"></div>')
         with a:
-            html(
-                '<div class="h">Pump status</div>'
-                f'<div class="pst"><div class="dot"></div><div>'
-                f'<b>OFF</b><small>Idle · 0 L used</small></div></div>'
-            )
+            html('<div class="h">Pump status</div>'
+                 f'<div class="pst"><div class="dot {dot}"></div><div>'
+                 f'<b>{state}</b><small>{sub}</small></div></div>')
         with b:
-            st.radio("Mode", ["Auto", "Manual"], key="mode", horizontal=True, label_visibility="collapsed")
-            st.toggle("Pump on / off", key="pump_on", disabled=ss.mode == "Auto")
+            html(f'<div class="sub">Last run</div><div class="dec"><b>{last}</b>'
+                 f'<small>{(pump.get("last_reason") or "")[:40]}</small></div>'
+                 f'<div class="badge">Auto-irrigation ON · threshold {WATER_THRESHOLD}%</div>')
         with c:
-            st.slider(f"Auto-water when soil is below {ss.thr}%", 10, 70, key="thr")
+            if dec.get("decision"):
+                conf = dec.get("confidence")
+                if conf is not None and conf <= 1:
+                    conf *= 100
+                conf_txt = f" · {conf:.0f}% confidence" if conf is not None else ""
+                reason = (dec.get("reason") or "")[:120]
+                html(f'<div class="sub">Last decision</div><div class="dec"><b>{dec["decision"]}</b>{conf_txt}'
+                     f'<small>{reason}</small></div>')
+            else:
+                html('<div class="sub">Last decision</div><div class="dec"><small>No decisions yet</small></div>')
 
 
 def spark(vals: list, col: str) -> str:
     if len(vals) < 2:
         return '<svg viewBox="0 0 100 28"></svg>'
     lo, r = min(vals), (max(vals) - min(vals)) or 1
-    pts = " ".join(
-        f"{i * 100 / (len(vals) - 1):.1f},{27 - (v - lo) / r * 25:.1f}"
-        for i, v in enumerate(vals)
-    )
-    return (
-        f'<svg viewBox="0 0 100 28" preserveAspectRatio="none">'
-        f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="2" '
-        f'vector-effect="non-scaling-stroke"/></svg>'
-    )
+    pts = " ".join(f"{i * 100 / (len(vals) - 1):.1f},{27 - (v - lo) / r * 25:.1f}"
+                   for i, v in enumerate(vals))
+    return (f'<svg viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="{pts}" '
+            f'fill="none" stroke="{col}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>')
 
 
 def card_sensors() -> None:
     ss = st.session_state
-    if not ss.plants or ss.sel_plant not in ss.plants:
-        st.error("Plant data not available")
+    p = ss.plants[ss.sel_plant]
+    if not p["has_data"]:
+        with st.container(key="sensors"):
+            html('<div class="stt"><b>Live sensor readings</b><span>No readings yet. Is the device or simulator running?</span></div>')
         return
 
-    p = ss.plants[ss.sel_plant]
-    hist = lambda k: [h.get(k, 0) for h in p["hist"]]
+    series = lambda k: [float(h[k]) for h in p["hist"] if h.get(k) is not None]
+    last_time = str(p["last_ts"])[11:19] if p["last_ts"] else "–"
+    rain_txt = "Raining" if p["rain"] else "Dry"
+
     rows = [
-        ("Soil moisture", f'{p["moisture"]:.0f}', "%", p["mlo"] <= p["moisture"] <= p["mhi"], hist("moisture")),
-        ("Temperature", T(p["temp"])[:-2], T(p["temp"])[-2:], p["tlo"] <= p["temp"] <= p["thi"], hist("temperature")),
-        ("Humidity", f'{p["hum"]:.0f}', "%", 35 <= p["hum"] <= 85, hist("humidity")),
-        ("Light", f'{p["light"] / 1000:.1f}', "klux", p["light"] <= 45000, hist("light")),
-        ("Water tank", "100", "%", True, None)
+        ("Soil moisture", f'{p["moisture"]:.0f}', "%", p["mlo"] <= p["moisture"] <= p["mhi"], series("moisture")),
+        ("Temperature", T(p["temp"])[:-2], T(p["temp"])[-2:], p["tlo"] <= p["temp"] <= p["thi"], series("temperature")),
+        ("Humidity", f'{p["hum"]:.0f}', "%", 35 <= p["hum"] <= 85, series("humidity")),
+        ("Rain sensor", rain_txt, "", not p["rain"], None),
+        ("Last reading", last_time, "", True, None),
     ]
     cells = ""
-    for label, val, unit, ok, series in rows:
+    for label, val, unit, ok, s in rows:
         col = "var(--good)" if ok else "var(--warn)"
-        extra = spark(series, col) if series else '<div class="bar"><i style="width:100%;background:var(--good)"></i></div>'
-        cells += (
-            f'<div class="m"><div class="ml">{label}<i style="background:{col}"></i></div>'
-            f'<div class="mv">{val}<small>{unit}</small></div>{extra}</div>'
-        )
-    stamp = f"{p['emoji']} {ss.sel_plant} · {datetime.now():%H:%M:%S}" if ss.live else "Updates paused"
+        extra = spark(s, col) if s is not None else ""
+        cells += (f'<div class="m"><div class="ml">{label}<i style="background:{col}"></i></div>'
+                  f'<div class="mv">{val}<small>{unit}</small></div>{extra}</div>')
+    stamp = f"{p['emoji']} {ss.sel_plant} · live" if ss.live else "Updates paused"
     with st.container(key="sensors"):
         html(f'<div class="sens"><div class="stt"><b>Live sensor readings</b><span>{stamp}</span></div>{cells}</div>')
 
 # ==================================================
-# PANEL VIEWS
+# PANEL (My plants only; other views are separate pages)
 # ==================================================
-def panel(view: str) -> None:
+def panel() -> None:
     ss = st.session_state
     with st.container(key="panel"):
-        html(f'<div class="h">{view}</div>')
-        if view == "My plants":
-            if st.button("＋ Add a plant", key="add_plant"):
-                st.switch_page("pages/5_Garden.py")
-
-            if ss.plants:
-                items = list(ss.plants.items())
-                for i in range(0, len(items), 3):
-                    for col, (n, p) in zip(st.columns(3), items[i:i + 3]):
+        html('<div class="h">My plants</div>')
+        if st.button("＋ Add a plant", key="add_plant"):
+            st.switch_page("pages/5_Garden.py")
+        items = list(ss.plants.items())
+        for i in range(0, len(items), 3):
+            for col, (n, p) in zip(st.columns(3), items[i:i + 3]):
+                with col:
+                    if p["has_data"]:
                         s = health(p)
                         lab, c = status(s)
-                        with col:
-                            html(f'<div class="pcard"><span>{p["emoji"]}</span>{n}<i style="color:{c}">{s}% · {lab}</i></div>')
-                            st.button(
-                                "Open on dashboard",
-                                key=f"open_{n}",
-                                on_click=open_plant,
-                                args=(n,),
-                                width="stretch"
-                            )
-        elif view == "Weather Forecast":
-            st.switch_page("pages/12_Weather.py")
-            '''a, b = st.columns([3, 1])
-            a.selectbox("City", list(CITIES), key="city")
-            b.radio("Unit", ["°C", "°F"], key="unit", horizontal=True)
-            fc = get_forecast(ss.city, 7)
-            f = (lambda c: c * 9 / 5 + 32) if ss.unit == "°F" else (lambda c: c)
-            df = pd.DataFrame(
-                {"High": [f(d["hi"]) for d in fc], "Low": [f(d["lo"]) for d in fc]},
-                index=[d["day"] for d in fc]
-            )
-            st.line_chart(df)
-            st.dataframe(
-                pd.DataFrame({
-                    "Day": [d["day"] for d in fc],
-                    "Rain %": [d["rain"] for d in fc],
-                    "Humidity %": [d["hum"] for d in fc],
-                    "Wind km/h": [d["wind"] for d in fc]
-                }),
-                hide_index=True,
-                width="stretch"
-            )'''
-        elif view == "Sensors":
-            st.switch_page("pages/9_Sensors.py")
-            '''m = st.radio("Reading", ["moisture", "temperature", "humidity", "light"], key="metric", horizontal=True)
-            data = {}
-            for n, p in ss.plants.items():
-                data[n] = pd.Series([h.get(m, 0) for h in p["hist"]])
-            if data:
-                st.line_chart(pd.DataFrame(data))
-                st.dataframe(
-                    pd.DataFrame([
-                        {
-                            "Plant": n,
-                            "Soil %": round(p["moisture"]),
-                            "Temp °C": round(p["temp"], 1),
-                            "Humidity %": round(p["hum"]),
-                            "Light lux": round(p["light"])
-                        }
-                        for n, p in ss.plants.items()
-                    ]),
-                    hide_index=True,
-                    width="stretch" 
-                )'''
-        elif view == "Analytics":
-            st.switch_page("pages/11_Analytics.py")
-            '''sc = {n: health(p) for n, p in ss.plants.items()}
-            a, b, c = st.columns(3)
-            if sc:
-                a.metric("Average health", f"{sum(sc.values()) / len(sc):.0f}%")
-                b.metric("Water used", f"0.0 L")
-                c.metric("Tank level", "100%")
-                st.bar_chart(pd.Series(sc, name="Health score"))'''
-        elif view == "About us":
-            st.switch_page("pages/7_About.py")
-            '''st.write(
-                "**Smart Garden** listens to your plants, byte by byte. Soil, air and light sensors feed "
-                "this dashboard so the pump waters only when your plants need it, and skips it when rain is coming."
-            )'''
-        else:  # Settings
-            st.switch_page("pages/10_Settings.py")
-            '''st.radio("Temperature unit", ["°C", "°F"], key="unit", horizontal=True)'''
+                        sub = f'<i style="color:{c}">{s}% · {lab}</i>'
+                    else:
+                        sub = '<i style="color:var(--mute)">No data yet</i>'
+                    html(f'<div class="pcard"><span>{p["emoji"]}</span>{n}{sub}</div>')
+                    st.button("Open on dashboard", key=f"open_{n}",
+                              on_click=open_plant, args=(n,), width="stretch")
 
 # ==================================================
-# INIT SESSION STATE
+# SESSION STATE
 # ==================================================
 def init_session_state():
     ss = st.session_state
-    
-    # If the user navigated back from an external page, reset view to Dashboard
-    if ss.get("view") in ["Profile", "Settings", "Analytics", "Sensors", "Weather Forecast", "About us"]:
+    if ss.get("view") in PAGES:  # returned from a separate page
         ss.view = "Dashboard"
-        
     ss.setdefault("view", "Dashboard")
     ss.setdefault("sel_plant", None)
-    ss.setdefault("mode", "Auto")
-    ss.setdefault("thr", 35)
-    ss.setdefault("pump_on", False)
-    ss.setdefault("sched", time(18, 30))
-    ss.setdefault("auto_sched", True)
     ss.setdefault("unit", "°C")
-    ss.setdefault("city", "Mumbai")
     ss.setdefault("live", True)
-    ss.setdefault("metric", "moisture")
     ss.setdefault("plants", {})
 
-    # Load plants from backend if empty
     if not ss.plants:
-        ss.plants = load_plants_from_backend(ss.auth_token)
-        if ss.plants and not ss.sel_plant:
-            ss.sel_plant = list(ss.plants.keys())[0]
+        ss.plants = load_plants_from_backend()
+    if ss.get("sel_plant") not in ss.plants:
+        ss.sel_plant = None
 
 # ==================================================
-# MAIN DASHBOARD
+# MAIN
 # ==================================================
+def refresh_selected_plant() -> None:
+    ss = st.session_state
+    plant_id = current_plant_id()
+    if not plant_id:
+        return
+    readings = load_sensor_history(plant_id, limit=60)
+    if not readings:
+        return
+    latest, p = readings[-1], ss.plants[ss.sel_plant]
+    p.update(
+        moisture=latest.get("moisture") or 0,
+        temp=latest.get("temperature") or 0,
+        hum=latest.get("humidity") or 0,
+        rain=bool(latest.get("rain_detected")),
+        last_ts=latest.get("timestamp"),
+        has_data=True,
+        hist=readings,
+    )
+
 def dashboard_body() -> None:
     ss = st.session_state
-
-    # Load sensor history for current plant
-    if ss.sel_plant and ss.sel_plant in ss.plants:
-        plant_id = ss.plants[ss.sel_plant].get("id")
-        if plant_id:
-            readings = load_sensor_history(plant_id, ss.auth_token, limit=60)
-
-            if readings:
-                # Update current values
-                latest = readings[-1]
-                ss.plants[ss.sel_plant]["moisture"] = latest.get("moisture", 0)
-                ss.plants[ss.sel_plant]["temp"] = latest.get("temperature", 0)
-                ss.plants[ss.sel_plant]["hum"] = latest.get("humidity", 0)
-                ss.plants[ss.sel_plant]["light"] = latest.get("light", 0)
-
-                # Update history
-                ss.plants[ss.sel_plant]["hist"] = readings
-
-    if ss.view == "Dashboard":
-        card_health()
+    if ss.view == "My plants":
+        panel()
+        return
+    refresh_selected_plant()
+    card_health()
+    card_weather()
+    if ss.sel_plant:
         card_water()
-        card_weather()
         card_pump()
         card_sensors()
     else:
-        panel(ss.view)
+        placeholder("water", "Next watering")
+        placeholder("pump", "Pump status")
+        placeholder("sensors", "Live sensor readings")
 
-# ==================================================
-# RUN PAGE
-# ==================================================
+
 init_session_state()
 inject_css()
 profile()
 with st.container(key="stage"):
     nav()
-    dashboard_body()
+    if not st.session_state.plants:
+        with st.container(key="panel"):
+            html('<div class="h">No plants yet</div>')
+            if st.button("＋ Add your first plant", key="add_first"):
+                st.switch_page("pages/5_Garden.py")
+    else:
+        run_every = 10 if st.session_state.live else None
+        st.fragment(run_every=run_every)(dashboard_body)()

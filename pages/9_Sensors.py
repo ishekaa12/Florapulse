@@ -7,13 +7,13 @@ upload.  The status badge (Good / Low / Critical) is computed client-side
 based on moisture thresholds so no backend logic change is needed.
 
 Auth guard: redirects to login if no token is in session state.
-Auto-refreshes every 15 seconds via st.rerun().
+Auto-refreshes every 15 seconds.
 """
 
 import base64
 import json
-import time
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 
 import requests
@@ -37,8 +37,8 @@ if not st.session_state.get("auth_token"):
     st.stop()
 
 BACKEND_URL = "http://localhost:8000"
-TOKEN = st.session_state["auth_token"]
-HEADERS = {"Authorization": f"Bearer {TOKEN}"}
+TS_IS_UTC = False          # backend stores readings with datetime.now() (local time)
+ONLINE_WITHIN_SECS = 120   # a sensor is "Online" if its last reading is newer than this
 
 # ---------------------------------------------------------------------------
 # Background image
@@ -169,32 +169,40 @@ def hum_status(value) -> str:
     return "Critical"
 
 
+def age_seconds(iso_str):
+    """Seconds since an ISO timestamp, or None."""
+    if not iso_str:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+        now = datetime.utcnow()
+    else:
+        now = datetime.utcnow() if TS_IS_UTC else datetime.now()
+    return max(0, int((now - ts).total_seconds()))
+
+
 def friendly_age(iso_str) -> str:
     """Return 'X mins ago' / 'X hrs ago' string from ISO timestamp."""
-    if not iso_str:
+    secs = age_seconds(iso_str)
+    if secs is None:
         return "Never"
-    try:
-        ts = datetime.fromisoformat(iso_str)
-        # Make naive if tz-aware
-        if ts.tzinfo is not None:
-            ts = ts.replace(tzinfo=None)
-        diff = datetime.now() - ts
-        secs = int(diff.total_seconds())
-        if secs < 60:
-            return f"{secs}s ago"
-        if secs < 3600:
-            return f"{secs // 60}m ago"
-        return f"{secs // 3600}h ago"
-    except Exception:
-        return iso_str[:16] if iso_str else "Unknown"
+    if secs < 60:
+        return f"{secs}s ago"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    return f"{secs // 3600}h ago"
 
 
 # ---------------------------------------------------------------------------
 # Fetch live sensor data from backend
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=12, show_spinner=False)
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_sensors(token: str):
-    """Fetch sensors for the current user. Cached for 12 s."""
+    """Fetch sensors for the current user. Cached for 5 s."""
     try:
         resp = requests.get(
             f"{BACKEND_URL}/api/sensors/my-sensors",
@@ -206,8 +214,8 @@ def fetch_sensors(token: str):
         if resp.status_code == 200:
             return resp.json().get("sensors", []), None
         return [], f"Backend error {resp.status_code}"
-    except requests.RequestException as e:
-        return [], f"Connection error: {e}"
+    except requests.RequestException:
+        return [], "Cannot reach backend. Is it running?"
 
 
 # ---------------------------------------------------------------------------
@@ -304,145 +312,126 @@ st.markdown(
 )
 st.write("")
 
-# ---------------------------------------------------------------------------
-# Fetch data
-# ---------------------------------------------------------------------------
-sensors_raw, err = fetch_sensors(TOKEN)
-
-if err == "session_expired":
-    st.session_state.auth_token = None
-    st.toast("Session expired — please log in again.")
-    st.switch_page("pages/2_Login.py")
-    st.stop()
-
-if err:
-    st.error(f"⚠️ Could not load sensor data: {err}")
-    st.info("Make sure the backend server is running at http://localhost:8000")
-    st.stop()
-
-if not sensors_raw:
-    st.info("🌱 No sensors found for your account. Add a plant and connect an ESP32 sensor to get started.")
-    st.stop()
 
 # ---------------------------------------------------------------------------
-# Build display rows
+# Live body (re-runs every 15 s without freezing the server)
 # ---------------------------------------------------------------------------
-SENSORS_TABLE = []   # [Plant, Sensor ID, Moisture, Temp, Humidity, Status]
-CONN_TABLE    = []   # [Sensor ID, Connection, Last Reading, Status]
-statuses      = []
+def sensors_body():
+    sensors_raw, err = fetch_sensors(st.session_state.auth_token)
 
-for s in sensors_raw:
-    plant  = s.get("plant_name", "Unknown")
-    sid    = s.get("sensor_id", "—")
-    moist  = s.get("latest_moisture")
-    temp   = s.get("latest_temperature")
-    hum    = s.get("latest_humidity")
-    online = s.get("is_connected", False)
-    age    = friendly_age(s.get("last_reading_at"))
+    if err == "session_expired":
+        st.session_state.auth_token = None
+        st.toast("Session expired — please log in again.")
+        st.switch_page("pages/2_Login.py")
+        st.stop()
 
-    # Format readings for display
-    moist_str = f"{moist}%" if moist is not None else "—"
-    temp_str  = f"{temp}°C" if temp is not None else "—"
-    hum_str   = f"{hum}%" if hum is not None else "—"
+    if err:
+        st.error(f"⚠️ Could not load sensor data: {err}")
+        st.info("Make sure the backend server is running at http://localhost:8000")
+        return
 
-    # Overall status: offline → moisture → temp → hum (worst wins)
-    if not online and moist is None:
-        status = "Offline"
-    else:
-        # Use moisture as primary health indicator
-        status = moisture_status(moist)
+    if not sensors_raw:
+        st.info("🌱 No sensors found for your account. Add a plant and connect an ESP32 sensor to get started.")
+        return
 
-    statuses.append(status)
-    conn_label = "Online" if online else "Offline"
+    # ---------------- Build display rows ----------------
+    SENSORS_TABLE = []   # [Plant, Sensor ID, Moisture, Temp, Humidity, Status]
+    CONN_TABLE = []      # [Sensor ID, Connection, Last Reading, Status]
+    statuses = []
 
-    SENSORS_TABLE.append([plant, sid, moist_str, temp_str, hum_str, status])
-    CONN_TABLE.append([sid, conn_label, age, status])
+    for s in sensors_raw:
+        plant = escape(str(s.get("plant_name", "Unknown")))
+        sid = escape(str(s.get("sensor_id", "—")))
+        moist = s.get("latest_moisture")
+        temp = s.get("latest_temperature")
+        hum = s.get("latest_humidity")
 
-# ---------------------------------------------------------------------------
-# Summary counts
-# ---------------------------------------------------------------------------
-total   = len(statuses)
-good    = statuses.count("Good")
-low     = statuses.count("Low")
-crit    = statuses.count("Critical")
-offline = statuses.count("Offline")
+        # Online = a reading arrived recently (is_connected never flips back to False)
+        secs = age_seconds(s.get("last_reading_at"))
+        online = secs is not None and secs <= ONLINE_WITHIN_SECS
+        age = friendly_age(s.get("last_reading_at"))
 
-# ---------------------------------------------------------------------------
-# Overview card
-# ---------------------------------------------------------------------------
-render_overview_card([
-    ("Total Sensors",    str(total)),
-    ("Healthy",          str(good)),
-    ("Needs Attention",  str(low)),
-    ("Critical",         str(crit)),
-    ("Offline",          str(offline)),
-])
+        moist_str = f"{moist}%" if moist is not None else "—"
+        temp_str = f"{temp}°C" if temp is not None else "—"
+        hum_str = f"{hum}%" if hum is not None else "—"
 
-st.write("")
+        status = moisture_status(moist) if online else "Offline"
+        statuses.append(status)
+        conn_label = "Online" if online else "Offline"
 
-# ---------------------------------------------------------------------------
-# Per-plant sensor table (full width)
-# ---------------------------------------------------------------------------
-render_table_card(
-    "Live Sensor Readings by Plant",
-    ["Plant", "Sensor ID", "Soil Moisture", "Temperature", "Humidity", "Status"],
-    SENSORS_TABLE,
-    height=max(280, 100 + 50 * len(SENSORS_TABLE)),
-    badge_col=5,
-)
+        SENSORS_TABLE.append([plant, sid, moist_str, temp_str, hum_str, status])
+        CONN_TABLE.append([sid, conn_label, age, status])
 
-st.write("")
+    # ---------------- Summary counts ----------------
+    total = len(statuses)
+    good = statuses.count("Good")
+    low = statuses.count("Low")
+    crit = statuses.count("Critical")
+    offline = statuses.count("Offline")
 
-# ---------------------------------------------------------------------------
-# Sensor health: donut chart + connection detail table
-# ---------------------------------------------------------------------------
-health_left, health_right = st.columns([1, 1.4])
+    # ---------------- Overview card ----------------
+    render_overview_card([
+        ("Total Sensors", str(total)),
+        ("Healthy", str(good)),
+        ("Needs Attention", str(low)),
+        ("Critical", str(crit)),
+        ("Offline", str(offline)),
+    ])
 
-with health_left:
-    STATUS_COLORS = {
-        "Good": "#2e7d54",
-        "Low": "#e0a530",
-        "Critical": "#c0433f",
-        "Offline": "#aaaaaa",
-    }
-    pie_labels = ["Good", "Low", "Critical", "Offline"]
-    pie_values = [good, low, crit, offline]
-    # Remove zero-count slices
-    filtered = [(lbl, val) for lbl, val in zip(pie_labels, pie_values) if val > 0]
-    fl, fv = zip(*filtered) if filtered else (["Good"], [1])
-    fc = [STATUS_COLORS[lbl] for lbl in fl]
+    st.write("")
 
-    render_chart_card(
-        "Sensor Health Distribution",
-        [
-            {
-                "type": "pie",
-                "labels": list(fl),
-                "values": list(fv),
-                "hole": 0.6,
-                "marker": {"colors": fc},
-            }
-        ],
-        {"legend": {"orientation": "h", "y": -0.15, "x": 0.5, "xanchor": "center"}},
-        height=340,
-    )
-
-with health_right:
+    # ---------------- Per-plant sensor table ----------------
     render_table_card(
-        "Connection & Last Reading",
-        ["Sensor ID", "Connection", "Last Reading", "Status"],
-        CONN_TABLE,
-        height=340,
-        badge_col=3,
+        "Live Sensor Readings by Plant",
+        ["Plant", "Sensor ID", "Soil Moisture", "Temperature", "Humidity", "Status"],
+        SENSORS_TABLE,
+        height=max(280, 100 + 50 * len(SENSORS_TABLE)),
+        badge_col=5,
     )
 
-# ---------------------------------------------------------------------------
-# Auto-refresh every 15 seconds
-# ---------------------------------------------------------------------------
-st.write("")
-refresh_placeholder = st.empty()
-refresh_placeholder.caption(f"⏱️ Auto-refreshing every 15 seconds · Last updated: {datetime.now().strftime('%H:%M:%S')}")
+    st.write("")
 
-time.sleep(15)
-st.cache_data.clear()
-st.rerun()
+    # ---------------- Donut + connection table ----------------
+    health_left, health_right = st.columns([1, 1.4])
+
+    with health_left:
+        STATUS_COLORS = {
+            "Good": "#2e7d54",
+            "Low": "#e0a530",
+            "Critical": "#c0433f",
+            "Offline": "#aaaaaa",
+        }
+        pie_labels = ["Good", "Low", "Critical", "Offline"]
+        pie_values = [good, low, crit, offline]
+        filtered = [(lbl, val) for lbl, val in zip(pie_labels, pie_values) if val > 0]
+        fl, fv = zip(*filtered) if filtered else (["Good"], [1])
+        fc = [STATUS_COLORS[lbl] for lbl in fl]
+
+        render_chart_card(
+            "Sensor Health Distribution",
+            [
+                {
+                    "type": "pie",
+                    "labels": list(fl),
+                    "values": list(fv),
+                    "hole": 0.6,
+                    "marker": {"colors": fc},
+                }
+            ],
+            {"legend": {"orientation": "h", "y": -0.15, "x": 0.5, "xanchor": "center"}},
+            height=340,
+        )
+
+    with health_right:
+        render_table_card(
+            "Connection & Last Reading",
+            ["Sensor ID", "Connection", "Last Reading", "Status"],
+            CONN_TABLE,
+            height=340,
+            badge_col=3,
+        )
+
+    st.caption(f"⏱️ Auto-refreshing every 15 seconds · Last updated: {datetime.now().strftime('%H:%M:%S')}")
+
+
+st.fragment(run_every=15)(sensors_body)()
