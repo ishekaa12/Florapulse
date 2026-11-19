@@ -27,7 +27,7 @@ import requests
 import streamlit as st
 
 st.set_page_config(
-    page_title="Smart Garden | Dashboard",
+    page_title="FloraPulse | Dashboard",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -529,10 +529,20 @@ def html(s: str) -> None:
 # ==================================================
 # CALLBACKS
 # ==================================================
+def nav_to(page: str) -> None:
+    try:
+        st.switch_page(page)
+    except Exception:
+        if page.startswith("pages/"):
+            st.switch_page(page[len("pages/"):])
+        else:
+            st.switch_page(f"pages/{page}")
+
+
 def go(view: str) -> None:
     st.session_state.view = view
     if view in PAGE_MAP:
-        st.switch_page(PAGE_MAP[view])
+        nav_to(PAGE_MAP[view])
 
 
 def open_plant(name: str) -> None:
@@ -555,8 +565,9 @@ def water_now() -> None:
 def logout() -> None:
     st.session_state.auth_token = None
     st.session_state.pop("plants", None)
+    st.session_state.pop("sel_plant", None)
     st.toast("Logged out")
-    st.switch_page("pages/2_Login.py")
+    nav_to("pages/2_Login.py")
 
 
 # ==================================================
@@ -588,18 +599,36 @@ def nav_html(plant_count: int, now: datetime) -> str:
     plural = "plant" if plant_count == 1 else "plants"
     return (
         card(NAV_R)
-        + blk(BRAND_R, '<div class="brand"><i>🌱</i>Smart Garden</div>')
+        + blk(BRAND_R, '<div class="brand"><i>🌱</i>FloraPulse</div>')
         + blk(SNAP_R, f'<div class="snap"><b>{now:%a, %d %b}</b>{plant_count} {plural} linked</div>')
     )
 
 
-def health_html(p: dict) -> str:
-    s = health(p)
-    lab, col = status(s)
+def health_html(p: dict | None) -> str:
     hdr = (
         '<div class="hdr"><div><div class="h">Plant health</div><div class="sub">Pick a plant to inspect</div></div>'
         '<div class="art art-plant"></div></div>'
     )
+    if not p:
+        row = (
+            '<div class="hrow"><div class="ring" style="--s:0;--c:#cfd8c3"><b>—</b><span>No plant</span></div>'
+            '<div class="stats"><div>Soil<b>—</b></div>'
+            '<div>Air<b>—</b></div>'
+            '<div>Humidity<b>—</b></div></div></div>'
+        )
+        return card(HEALTH_R) + blk(HEALTH_HDR_R, hdr) + blk(HEALTH_ROW_R, row)
+
+    if not p.get("has_data"):
+        row = (
+            '<div class="hrow"><div class="ring" style="--s:0;--c:#cfd8c3"><b>—</b><span>No data</span></div>'
+            '<div class="stats"><div>Soil<b>—</b></div>'
+            '<div>Air<b>—</b></div>'
+            '<div>Humidity<b>—</b></div></div></div>'
+        )
+        return card(HEALTH_R) + blk(HEALTH_HDR_R, hdr) + blk(HEALTH_ROW_R, row)
+
+    s = health(p)
+    lab, col = status(s)
     row = (
         f'<div class="hrow"><div class="ring" style="--s:{s};--c:{col}"><b>{s}</b><span>{lab}</span></div>'
         f'<div class="stats"><div>Soil<b>{p["moisture"]:.0f}%</b></div>'
@@ -630,7 +659,26 @@ def prediction_view(pred: dict):
     return "info", "🌱 Plant is stable", sub if friendly else "No watering needed right now"
 
 
-def water_html(pred: dict) -> str:
+def water_html(pred: dict, has_plant: bool = True) -> str:
+    hdr = (
+        '<div class="hdr"><div><div class="h">Next watering</div><div class="sub">Predicted from moisture trend</div></div>'
+        '<div class="art art-can"></div></div>'
+    )
+    if not has_plant:
+        mini = (
+            '<div class="mini"><span>Moisture <b>—</b></span>'
+            '<span>Drying <b>—</b></span>'
+            '<span>Confidence <b>—</b></span></div>'
+        )
+        return (
+            card(WATER_R)
+            + blk(WATER_HDR_R, hdr)
+            + blk(PILL_R, '<div class="pill info"><b>🌱 No plant selected</b><span>Pick a plant above to view predictions</span></div>')
+            + blk(MINI_R, mini)
+            + blk(RULE_R, "", "rule")
+            + blk(SCHED_LBL_R, '<div class="lbl">Water daily at</div>')
+        )
+
     kind, title, sub = prediction_view(pred)
     pred = pred or {}
     fmt = lambda v, f: "—" if v is None else f.format(v)
@@ -642,10 +690,6 @@ def water_html(pred: dict) -> str:
         f'<div class="mini"><span>Moisture <b>{fmt(pred.get("current_moisture"), "{:.0f}%")}</b></span>'
         f'<span>Drying <b>{fmt(pred.get("depletion_rate_per_hour"), "{:.2f}%/h")}</b></span>'
         f'<span>Confidence <b>{confidence_text}</b></span></div>'
-    )
-    hdr = (
-        '<div class="hdr"><div><div class="h">Next watering</div><div class="sub">Predicted from moisture trend</div></div>'
-        '<div class="art art-can"></div></div>'
     )
     return (
         card(WATER_R)
@@ -688,7 +732,22 @@ def weather_html(w: dict) -> str:
     )
 
 
-def pump_html(pump: dict, decision: dict) -> str:
+def pump_html(pump: dict, decision: dict, has_plant: bool = True) -> str:
+    if not has_plant:
+        status_body = (
+            '<div class="pst"><div class="dot"></div><div>'
+            '<b>—</b><small>No plant selected</small></div></div>'
+        )
+        return (
+            card(PUMP_R)
+            + blk(PUMP_TITLE_R, '<div class="h">Pump status</div>')
+            + blk(PUMP_STATUS_R, status_body)
+            + blk(PUMP_VR1_R, "", "vr")
+            + blk(MODE_LBL_R, '<div class="lbl">Last run</div><div class="dec"><b>—</b></div>')
+            + blk(PUMP_VR2_R, "", "vr")
+            + blk(THR_LBL_R, '<div class="lbl">Latest decision</div><div class="dec"><b>Select a plant</b><small>Pick a plant above to inspect status</small></div>')
+        )
+
     pump = pump or {}
     decision = decision or {}
     if pump.get("active"):
@@ -732,28 +791,79 @@ def pump_html(pump: dict, decision: dict) -> str:
         + blk(THR_LBL_R, f'<div class="lbl">Latest decision</div><div class="dec"><b>{decision_name}</b>{conf_text}<small>{reason}</small></div>')
     )
 
-
 def spark(vals: list, col: str) -> str:
-    if len(vals) < 2:   # no history yet: faint dashed baseline instead of an empty gap
-        return ('<svg viewBox="0 0 100 28" preserveAspectRatio="none"><line x1="0" y1="14" x2="100" y2="14" '
-                'stroke="#d5e6bd" stroke-width="2" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/></svg>')
-    lo, r = min(vals), (max(vals) - min(vals)) or 1
-    pts = " ".join(f"{i * 100 / (len(vals) - 1):.1f},{27 - (v - lo) / r * 25:.1f}" for i, v in enumerate(vals))
+    # Remove missing or invalid sensor readings
+    vals = [v for v in vals if isinstance(v, (int, float))]
+
+    # No valid history: show a faint dashed baseline
+    if len(vals) < 2:
+        return (
+            '<svg viewBox="0 0 100 28" preserveAspectRatio="none">'
+            '<line x1="0" y1="14" x2="100" y2="14" '
+            'stroke="#d5e6bd" stroke-width="2" stroke-dasharray="4 4" '
+            'vector-effect="non-scaling-stroke"/></svg>'
+        )
+
+    lo = min(vals)
+    r = (max(vals) - lo) or 1
+
+    pts = " ".join(
+        f"{i * 100 / (len(vals) - 1):.1f},{27 - (v - lo) / r * 25:.1f}"
+        for i, v in enumerate(vals)
+    )
+
     return (
         f'<svg viewBox="0 0 100 28" preserveAspectRatio="none">'
         f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="2" '
         f'vector-effect="non-scaling-stroke"/></svg>'
     )
 
+def sensors_html(p: dict | None, plant_name: str | None, live: bool, now: datetime) -> str:
+    if not p or not plant_name:
+        rows = [
+            ("Soil moisture", "—", "%", True, None),
+            ("Temperature", "—", "°C", True, None),
+            ("Humidity", "—", "%", True, None),
+            #("Light", "—", "klux", True, None),
+            #("Water tank", "—", "%", True, None),
+        ]
+        cells = ""
+        for label, val, unit, ok, series in rows:
+            extra = '<svg viewBox="0 0 100 28" preserveAspectRatio="none"><line x1="0" y1="14" x2="100" y2="14" stroke="#d5e6bd" stroke-width="2" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/></svg>'
+            cells += (
+                f'<div class="m"><div class="ml">{label}</div>'
+                f'<div class="mv">{val}<small>{unit}</small></div>{extra}</div>'
+            )
+        stamp = "Select a plant above to view readings"
+        body = f'<div class="sens"><div class="stt"><b>Live sensor readings</b><span>{stamp}</span></div>{cells}</div>'
+        return card(SENS_R) + blk(SENS_IN_R, body)
 
-def sensors_html(p: dict, plant_name: str, live: bool, now: datetime) -> str:
+    if not p.get("has_data"):
+        rows = [
+            ("Soil moisture", "—", "%", True, None),
+            ("Temperature", "—", "°C", True, None),
+            ("Humidity", "—", "%", True, None),
+            #("Light", "—", "klux", True, None),
+            #("Water tank", "100", "%", True, None),
+        ]
+        cells = ""
+        for label, val, unit, ok, series in rows:
+            extra = '<svg viewBox="0 0 100 28" preserveAspectRatio="none"><line x1="0" y1="14" x2="100" y2="14" stroke="#d5e6bd" stroke-width="2" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/></svg>'
+            cells += (
+                f'<div class="m"><div class="ml">{label}</div>'
+                f'<div class="mv">{val}<small>{unit}</small></div>{extra}</div>'
+            )
+        stamp = f"{p['emoji']} {esc(plant_name)} · Waiting for sensor readings..."
+        body = f'<div class="sens"><div class="stt"><b>Live sensor readings</b><span>{stamp}</span></div>{cells}</div>'
+        return card(SENS_R) + blk(SENS_IN_R, body)
+
     hist = lambda k: [h.get(k, 0) for h in p["hist"]]
     rows = [
         ("Soil moisture", f'{p["moisture"]:.0f}', "%", p["mlo"] <= p["moisture"] <= p["mhi"], hist("moisture")),
         ("Temperature", T(p["temp"])[:-2], T(p["temp"])[-2:], p["tlo"] <= p["temp"] <= p["thi"], hist("temperature")),
         ("Humidity", f'{p["hum"]:.0f}', "%", 35 <= p["hum"] <= 85, hist("humidity")),
-        ("Light", f'{p["light"] / 1000:.1f}', "klux", p["light"] <= 45000, hist("light")),
-        ("Water tank", "100", "%", True, None),
+       # ("Light", f'{p["light"] / 1000:.1f}', "klux", p["light"] <= 45000, hist("light")),
+        #("Water tank", "100", "%", True, None),
     ]
     cells = ""
     for label, val, unit, ok, series in rows:
@@ -785,8 +895,8 @@ def profile_widget(name: str) -> None:
         with st.popover(name[:1].upper(), help="Your profile"):
             html(f'<div class="avatar-name">{esc(name)}</div>')
             st.caption("Signed in to Smart Garden")
-            if st.button("Settings", key="pf_settings", icon="⚙️"):
-                go("Settings")
+            if st.button("Profile", key="pf_profile", icon="👤"):
+                nav_to("pages/8_Profile.py")
             if st.button("Log out", key="pf_logout", icon="🚪"):
                 logout()
 
@@ -803,7 +913,11 @@ def nav_widgets() -> None:
 
 def dashboard_widgets() -> None:
     ss = st.session_state
-    st.selectbox("Plant", list(ss.plants), key="sel_plant", label_visibility="collapsed")
+    options = list(ss.plants)
+    kw = {"placeholder": "Select a plant...", "key": "sel_plant"}
+    if ss.sel_plant is None:
+        kw["index"] = None
+    st.selectbox("Plant", options, label_visibility="collapsed", **kw)
     st.time_input("Water daily at", key="sched", step=300, label_visibility="collapsed")
     st.toggle("Follow schedule", key="auto_sched")
     st.button("Water now", key="water_now", icon="💧", on_click=water_now)
@@ -819,7 +933,7 @@ def panel() -> None:
     with st.container(key="panel"):
         html('<div class="h">My plants</div>')
         if st.button("＋ Add a plant", key="add_plant"):
-            st.switch_page("pages/5_Garden.py")
+            nav_to("pages/5_Garden.py")
         if not ss.plants:
             html('<div class="sub">No plants yet. Add your first one to start monitoring.</div>')
             return
@@ -854,24 +968,32 @@ def init_session_state() -> None:
     # Load plants from backend if empty
     if not ss.plants:
         ss.plants = load_plants_from_backend()
-    if ss.plants and ss.sel_plant not in ss.plants:
-        ss.sel_plant = next(iter(ss.plants))
+    if ss.sel_plant is not None and ss.sel_plant not in ss.plants:
+        ss.sel_plant = None
 
 
 def refresh_selected_plant() -> None:
     plant_id = current_plant_id()
     if not plant_id:
         return
+    plant = st.session_state.plants.get(st.session_state.sel_plant)
+    if not plant:
+        return
     readings = load_sensor_history(plant_id, limit=60)
     if not readings:
+        plant["has_data"] = False
+        plant["hist"] = []
+        plant["moisture"] = 0
+        plant["temp"] = 0
+        plant["hum"] = 0
+        plant["light"] = 0
         return
     latest = readings[-1]
-    plant = st.session_state.plants[st.session_state.sel_plant]
     plant.update(
-        moisture=latest.get("moisture") or 0,
-        temp=latest.get("temperature") or 0,
-        hum=latest.get("humidity") or 0,
-        light=latest.get("light") or 0,
+        moisture=float(latest.get("moisture")) if latest.get("moisture") is not None else 0.0,
+        temp=float(latest.get("temperature")) if latest.get("temperature") is not None else 0.0,
+        hum=float(latest.get("humidity")) if latest.get("humidity") is not None else 0.0,
+        light=float(latest.get("light")) if latest.get("light") is not None else 0.0,
         rain=bool(latest.get("rain_detected")),
         last_ts=latest.get("timestamp"),
         has_data=True,
@@ -891,19 +1013,33 @@ now = datetime.now()
 show_cards = ss.view == "Dashboard" and bool(ss.plants)
 
 if show_cards:
-    refresh_selected_plant()
-    plant = ss.plants[ss.sel_plant]
-    pid = plant.get("id")
-    prediction = load_prediction(pid) if pid else {}
-    markup = (
-        header_html(name, now)
-        + nav_html(len(ss.plants), now)
-        + health_html(plant)
-        + water_html(prediction)
-        + weather_html(load_weather())
-        + pump_html(load_pump(pid), load_decision(pid))
-        + sensors_html(plant, ss.sel_plant, ss.live, now)
-    )
+    plant = ss.plants.get(ss.sel_plant)
+    if plant:
+        refresh_selected_plant()
+        plant = ss.plants.get(ss.sel_plant)
+        pid = plant.get("id")
+        prediction = load_prediction(pid) if pid else {}
+        pump_data = load_pump(pid) if pid else {}
+        decision_data = load_decision(pid) if pid else {}
+        markup = (
+            header_html(name, now)
+            + nav_html(len(ss.plants), now)
+            + health_html(plant)
+            + water_html(prediction, has_plant=True)
+            + weather_html(load_weather())
+            + pump_html(pump_data, decision_data, has_plant=True)
+            + sensors_html(plant, ss.sel_plant, ss.live, now)
+        )
+    else:
+        markup = (
+            header_html(name, now)
+            + nav_html(len(ss.plants), now)
+            + health_html(None)
+            + water_html({}, has_plant=False)
+            + weather_html(load_weather())
+            + pump_html({}, {}, has_plant=False)
+            + sensors_html(None, None, ss.live, now)
+        )
 else:
     markup = header_html(name, now) + nav_html(len(ss.plants), now)
 

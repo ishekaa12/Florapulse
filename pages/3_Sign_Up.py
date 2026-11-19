@@ -415,7 +415,6 @@ def inject_styles() -> bool:
 # ----------------------------------------------------------------------------
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-
 def validate_signup_form(
     username: str,
     email: str,
@@ -513,7 +512,7 @@ def signup_page() -> None:
 
         st.checkbox(
             "I have accepted all terms and conditions.",
-            value=True,
+            value=False,
             key="su_terms",
         )
         st.button("Sign Up", key="su_submit", on_click=handle_signup)

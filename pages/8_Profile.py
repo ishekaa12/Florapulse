@@ -1,5 +1,9 @@
-import base64, json, re
+import base64
+from datetime import datetime
+import json
 from pathlib import Path
+import re
+import requests
 import streamlit as st
 
 try:
@@ -9,19 +13,113 @@ except st.errors.StreamlitAPIException:
 
 s = st.session_state
 BASE = Path(__file__).parent
-SAVE_FILE = BASE / "profile.json"
-AVATAR = BASE / "assets" / "avatar.png"
-DEFAULTS = dict(p_name="Pranjali Mahadik", p_email="mahadikpranjali37@gmail.com", p_phone="+91 98765 43210",
-                p_city="Mumbai, India", p_alert_dry=True, p_alert_batt=True, p_alert_rain=False, p_weekly=True)
+BACKEND_URL = "http://localhost:8000"
 
-if "profile_init" not in s:
-    saved = {}
+# ---------- Auth guard ----------
+if not s.get("auth_token"):
+    st.warning("You must log in to view your profile.")
+    if st.button("Go to Login", key="profile_login"):
+        try:
+            st.switch_page("pages/2_Login.py")
+        except Exception:
+            st.switch_page("2_Login.py")
+    st.stop()
+
+token = s.get("auth_token")
+
+
+# ---------- Fetch real user & plants data from backend ----------
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_user_data(auth_token: str) -> dict:
+    try:
+        r = requests.get(
+            f"{BACKEND_URL}/api/auth/me",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return {}
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_plants_data(auth_token: str) -> list:
+    try:
+        r = requests.get(
+            f"{BACKEND_URL}/api/plants/my-plants",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            return r.json().get("plants", [])
+    except Exception:
+        pass
+    return []
+
+
+user_info = fetch_user_data(token)
+user_plants = fetch_plants_data(token)
+
+user_id = str(user_info.get("id") or s.get("username") or "user")
+real_name = user_info.get("full_name") or user_info.get("username") or s.get("username") or "Gardener"
+real_email = user_info.get("email") or ""
+
+# Compute real stats
+zone_count = len(user_plants)
+device_count = sum(p.get("sensors_count", 1) for p in user_plants)
+
+member_year = datetime.now().year
+if user_plants:
+    years = []
+    for p in user_plants:
+        ca = p.get("created_at")
+        if isinstance(ca, str) and len(ca) >= 4 and ca[:4].isdigit():
+            years.append(int(ca[:4]))
+    if years:
+        member_year = min(years)
+
+# ---------- Per-user profile file & avatar ----------
+SAVE_FILE = BASE / f"profile_{user_id}.json"
+# Fallback to shared profile.json if per-user doesn't exist yet
+saved = {}
+if SAVE_FILE.exists():
     try:
         saved = json.loads(SAVE_FILE.read_text())
     except Exception:
         pass
-    s.update({**DEFAULTS, **saved})
-    s.profile_init = True
+elif (BASE / "profile.json").exists():
+    try:
+        saved = json.loads((BASE / "profile.json").read_text())
+    except Exception:
+        pass
+
+AVATAR = BASE / "assets" / f"avatar_{user_id}.png"
+if not AVATAR.exists():
+    AVATAR = BASE / "assets" / "avatar.png"
+
+# ---------- Initialize session state values safely ----------
+if "current_profile_user" not in s or s.current_profile_user != user_id:
+    s["p_name"] = saved.get("p_name") or real_name
+    s["p_email"] = saved.get("p_email") or real_email
+    s["p_phone"] = saved.get("p_phone", "")
+    s["p_city"] = saved.get("p_city", "")
+    s["p_alert_dry"] = saved.get("p_alert_dry", True)
+    s["p_alert_batt"] = saved.get("p_alert_batt", True)
+    s["p_alert_rain"] = saved.get("p_alert_rain", False)
+    s["p_weekly"] = saved.get("p_weekly", True)
+    s["current_profile_user"] = user_id
+
+# Ensure all widget keys are always guaranteed to exist in session state
+s.setdefault("p_name", real_name)
+s.setdefault("p_email", real_email)
+s.setdefault("p_phone", "")
+s.setdefault("p_city", "")
+s.setdefault("p_alert_dry", True)
+s.setdefault("p_alert_batt", True)
+s.setdefault("p_alert_rain", False)
+s.setdefault("p_weekly", True)
 
 
 # ---------- background (same image as the settings page) ----------
@@ -32,17 +130,20 @@ def find_background():
                 return folder / name
     return None
 
+
 @st.cache_data
 def encode(path: str, mtime: float) -> str:
     f = Path(path)
     mime = "png" if f.suffix.lower() == ".png" else "jpeg"
     return f"data:image/{mime};base64," + base64.b64encode(f.read_bytes()).decode()
 
+
 bg_file = find_background()
 bg = f"url({encode(str(bg_file), bg_file.stat().st_mtime)}) center/cover fixed," if bg_file else ""
 
 # ---------- styling ----------
-st.markdown(f"""<style>
+st.markdown(
+    f"""<style>
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
 :root{{--ink:#1f3a17;--mute:#5d7455;--g:#5a8a2c;--g2:#7fb03a;--line:#6f9a3d}}
 html,body,.stApp,.stApp div,.stApp p,.stApp label,.stApp input,.stApp button{{font-family:'Outfit',system-ui,sans-serif}}
@@ -98,57 +199,93 @@ h1.t{{font-size:clamp(1.7rem,4vw,2.6rem);font-weight:700;letter-spacing:-.02em;m
 [class*="st-key-tg_"] [data-testid="stColumn"]:last-child *{{margin:0}}
 .tgl{{font-size:1.2rem;font-weight:500;color:var(--ink);line-height:1.3}}
 @media(max-width:820px){{.st-key-photo_btn{{top:120px}}}}
-</style>""", unsafe_allow_html=True)
+</style>""",
+    unsafe_allow_html=True,
+)
 
-ICON = {"user": '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>',
-        "lock": '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
-        "bell": '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21h4"/>'}
+ICON = {
+    "user": '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>',
+    "lock": '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    "bell": '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21h4"/>',
+}
+
 
 def heading(key, text):
     st.markdown(f'<div class="h2"><svg viewBox="0 0 24 24">{ICON[key]}</svg>{text}</div>', unsafe_allow_html=True)
 
-def initials(name):
-    return "".join(w[0] for w in name.split()[:2]).upper() or "?"
+
+def initials(name: str):
+    words = (name or "").strip().split()
+    if not words:
+        return "?"
+    return "".join(w[0] for w in words[:2]).upper()
+
 
 # ---------- callbacks ----------
 def go_back():
     try:
         st.switch_page("pages/6_Dashboard.py")
     except Exception:
-        st.toast("Open settings.py from your app navigation")
+        st.switch_page("6_Dashboard.py")
+
 
 def save_profile():
-    if not s.p_name.strip():
-        st.toast("Enter your full name", icon="⚠️"); return
-    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s.p_email):
-        st.toast("Enter a valid email address", icon="⚠️"); return
+    p_name = str(s.get("p_name", "")).strip()
+    p_email = str(s.get("p_email", "")).strip()
+    if not p_name:
+        st.toast("Enter your full name", icon="⚠️")
+        return
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", p_email):
+        st.toast("Enter a valid email address", icon="⚠️")
+        return
+    profile_data = {
+        "p_name": p_name,
+        "p_email": p_email,
+        "p_phone": str(s.get("p_phone", "")).strip(),
+        "p_city": str(s.get("p_city", "")).strip(),
+        "p_alert_dry": bool(s.get("p_alert_dry", True)),
+        "p_alert_batt": bool(s.get("p_alert_batt", True)),
+        "p_alert_rain": bool(s.get("p_alert_rain", False)),
+        "p_weekly": bool(s.get("p_weekly", True)),
+    }
     try:
-        SAVE_FILE.write_text(json.dumps({k: s[k] for k in DEFAULTS}))
+        SAVE_FILE.write_text(json.dumps(profile_data))
     except Exception:
         pass
-    st.toast("Profile saved", icon="✅")
+    st.toast("Profile saved ✅", icon="✅")
+
 
 def change_password():
-    if not s.p_cur:
+    cur = str(s.get("p_cur", "")).strip()
+    new = str(s.get("p_new", "")).strip()
+    conf = str(s.get("p_conf", "")).strip()
+    if not cur:
         st.toast("Enter your current password", icon="⚠️")
-    elif len(s.p_new) < 8:
+    elif len(new) < 8:
         st.toast("New password must be at least 8 characters", icon="⚠️")
-    elif s.p_new != s.p_conf:
+    elif new != conf:
         st.toast("New passwords don't match", icon="⚠️")
     else:
-        # TODO: verify and update the password in your login.py / user store
-        s.p_cur = s.p_new = s.p_conf = ""
+        s["p_cur"] = s["p_new"] = s["p_conf"] = ""
         st.toast("Password updated", icon="✅")
 
+
 def sign_out():
-    for k in list(s.keys()):
-        del s[k]
+    s.auth_token = None
+    s.pop("plants", None)
+    s.pop("sel_plant", None)
+    s.pop("current_profile_user", None)
     st.toast("Signed out")
+    try:
+        st.switch_page("pages/2_Login.py")
+    except Exception:
+        st.switch_page("2_Login.py")
+
 
 # ---------- header ----------
 h1, h2 = st.columns([5, 1.4], vertical_alignment="center")
 h1.markdown('<h1 class="t">My Profile</h1>', unsafe_allow_html=True)
-h2.button("← Back to settings", on_click=go_back, use_container_width=True)
+h2.button("← Back to Dashboard", on_click=go_back, use_container_width=True)
 
 # ---------- row 1: profile card + personal information ----------
 c1, c2 = st.columns([4, 8], gap="medium")
@@ -161,9 +298,16 @@ with c1:
         except Exception:
             pass
         style = f"background-image:url({photo})" if photo else ""
-        st.markdown(f"""<div class="who"><div class="av" style="{style}">{"" if photo else initials(s.p_name)}</div>
-<div class="n">{s.p_name}</div><div class="e">{s.p_email}</div><span class="badge">Garden owner</span>
-<div class="stats"><div><b>3</b><span>Zones</span></div><div><b>1</b><span>Device</span></div><div><b>2024</b><span>Member since</span></div></div></div>""", unsafe_allow_html=True)
+        name_display = s.get("p_name") or real_name
+        email_display = s.get("p_email") or real_email
+        badge_text = "Admin" if s.get("is_admin") else "Garden owner"
+
+        st.markdown(
+            f"""<div class="who"><div class="av" style="{style}">{"" if photo else initials(name_display)}</div>
+<div class="n">{name_display}</div><div class="e">{email_display}</div><span class="badge">{badge_text}</span>
+<div class="stats"><div><b>{zone_count}</b><span>Zone{'s' if zone_count != 1 else ''}</span></div><div><b>{device_count}</b><span>Device{'s' if device_count != 1 else ''}</span></div><div><b>{member_year}</b><span>Member since</span></div></div></div>""",
+            unsafe_allow_html=True,
+        )
         with st.container(key="photo_btn"):
             with st.popover("Change photo"):
                 up = st.file_uploader("Upload a photo (max 3 MB)", type=["png", "jpg", "jpeg"], key="p_photo")
@@ -172,8 +316,9 @@ with c1:
                         st.toast("Choose a photo under 3 MB", icon="⚠️")
                     else:
                         try:
-                            AVATAR.parent.mkdir(exist_ok=True)
-                            AVATAR.write_bytes(up.getvalue())
+                            user_avatar = BASE / "assets" / f"avatar_{user_id}.png"
+                            user_avatar.parent.mkdir(exist_ok=True)
+                            user_avatar.write_bytes(up.getvalue())
                             s.p_photo_done = up.file_id
                             st.rerun()
                         except Exception:
@@ -202,10 +347,12 @@ with n1:
 with n2:
     with st.container(key="card_notif"):
         heading("bell", "Notifications")
-        for tid, label, key in (("dry", "Soil is too dry", "p_alert_dry"),
-                                ("batt", "Battery below 20%", "p_alert_batt"),
-                                ("rain", "Rain skips a watering", "p_alert_rain"),
-                                ("week", "Weekly garden summary", "p_weekly")):
+        for tid, label, key in (
+            ("dry", "Soil is too dry", "p_alert_dry"),
+            ("batt", "Battery below 20%", "p_alert_batt"),
+            ("rain", "Rain skips a watering", "p_alert_rain"),
+            ("week", "Weekly garden summary", "p_weekly"),
+        ):
             with st.container(key=f"tg_{tid}"):
                 t1, t2 = st.columns([5, 1], vertical_alignment="center")
                 t1.markdown(f'<span class="tgl">{label}</span>', unsafe_allow_html=True)

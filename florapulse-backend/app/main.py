@@ -695,6 +695,8 @@ def get_sensor_history(
         if sensors:
             sensor_ids = [s.id for s in sensors]
             query = query.filter(SensorReading.sensor_id.in_(sensor_ids))
+        else:
+            return {"readings": []}
 
     readings = query.order_by(SensorReading.timestamp.desc()).limit(limit).all()
 

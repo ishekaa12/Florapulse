@@ -612,7 +612,7 @@ with t1:
     <div class="ghibli-card sage team-card">
         <div class="team-emoji-avatar sage-bg">🎨</div>
         <div class="team-name">Pranjali</div>
-        <div class="team-title">Lead Chaos Wrangler & Greenery Aestheticist</div>
+        <div class="team-title">Greenery Aestheticist</div>
         <div class="team-bio">
             Pranjali turns chaos into elegant code and vibes into magic.
             When not debugging, she's teaching her pothos the art of thriving.
@@ -620,9 +620,6 @@ with t1:
         </div>
         <div class="team-quote">
             "Good code is like a well-watered plant clean, purposeful, and thriving."
-        </div>
-        <div class="team-fun-fact">
-              Pet peeve: people pouring cold coffee into plant pots
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -632,17 +629,14 @@ with t2:
     <div class="ghibli-card cream-bg team-card">
         <div class="team-emoji-avatar cream-team-bg">🌿</div>
         <div class="team-name">Shreeya</div>
-        <div class="team-title">Senior Overthinker & Pixel Florist</div>
+        <div class="team-title">Pixel Florist</div>
         <div class="team-bio">
-            Shreeya believes plants are tiny therapists. She designs systems
-            that make sense to humans (and plants). Found frequently talking to succulents.
+            Shreeya believes plants are tiny therapists. 
+            Found frequently talking to succulents.
             <br><em>📿</em>
         </div>
         <div class="team-quote">
             "Every plant deserves to feel loved, even the dramatic ones."
-        </div>
-        <div class="team-fun-fact">
-              Pet peeve: plant names that are just numbers
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -652,18 +646,14 @@ with t3:
     <div class="ghibli-card blush team-card">
         <div class="team-emoji-avatar blush-bg">✨</div>
         <div class="team-name">Isheka</div>
-        <div class="team-title">Chief Vibe Curator & Backend Orchestrator</div>
+        <div class="team-title">Backend Orchestrator</div>
         <div class="team-bio">
             Isheka translates plant dreams into pixels. She obsesses over
             experience, plant health, and the perfect shade of green.
-            Her room looks like a secret garden.
             <br><em> 🌸</em>
         </div>
         <div class="team-quote">
             "A good interface is like a plant-parent intuitive, responsive, and always listening."
-        </div>
-        <div class="team-fun-fact">
-              Pet peeve: interfaces that don't have dark mode
         </div>
     </div>
     """, unsafe_allow_html=True)

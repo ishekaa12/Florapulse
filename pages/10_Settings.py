@@ -266,10 +266,10 @@ with right:
             st.text_input("Device name", key="dname", label_visibility="collapsed", max_chars=32)
         with row("Device ID"):
             st.markdown(f'<div class="ro">{escape(sensor["sensor_id"]) if sensor else "No sensor yet"}</div>', unsafe_allow_html=True)
-        with row("Firmware version"):
-            st.markdown('<div class="ro">Not reported</div>', unsafe_allow_html=True)
-        with row("Battery level"):
-            st.markdown('<div class="ro">Not reported<i class="dot off"></i></div>', unsafe_allow_html=True)
+        #with row("Firmware version"):
+          #  st.markdown('<div class="ro">Not reported</div>', unsafe_allow_html=True)
+        #with row("Battery level"):
+           # st.markdown('<div class="ro">Not reported<i class="dot off"></i></div>', unsafe_allow_html=True)
 
 # ---------- thresholds ----------
 with st.container(key="card_auto"):

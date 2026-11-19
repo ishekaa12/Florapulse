@@ -345,10 +345,6 @@ def handle_login() -> None:
         st.toast(f"Login request failed: {error}", icon="❌")
 
 
-def go_to_signup() -> None:
-    st.switch_page("pages/3_Sign_Up.py")
-
-
 # If a valid token is already in the session, skip the login screen.
 if st.session_state.get("auth_token"):
     st.switch_page("pages/4_Create.py")
@@ -401,11 +397,8 @@ def login_page() -> None:
             args=("forgot",),
         )
         st.button("Login", key="login_btn", on_click=handle_login)
-        st.button(
-            "Create account ? Sign up ➔",
-            key="signup_btn",
-            on_click=go_to_signup,
-        )
+        if st.button("Create Account", key="signup_btn"):
+            st.switch_page("pages/3_Sign_Up.py")
 
 
 def simple_page(title: str, message: str) -> None:
