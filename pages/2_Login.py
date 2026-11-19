@@ -2,45 +2,56 @@ import base64
 import re
 from pathlib import Path
 
-import streamlit as st
 import requests
-import time
+import streamlit as st
+
+# ----------------------------------------------------------------------------
+# PAGE CONFIGURATION
+# ----------------------------------------------------------------------------
+# set_page_config must be the first Streamlit command on the page.
+st.set_page_config(
+    page_title="FloraPulse | Login",
+    page_icon="🌿",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 st.session_state.setdefault("auth_token", None)
+st.session_state.setdefault("page", "login")
 
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
 ASSET_DIR = Path(__file__).parent / "assets"
-BG_STEM = "background"
-REF_W, REF_H = 1366, 768          # size of the background design
+BG_STEM = "login_bg"  # assets/login_bg.png (card + vines + title)
+REF_W, REF_H = 1366, 768
 
 # Backend configuration
 BACKEND_URL = "http://localhost:8000"
 
-# name: (x, y, width)  -> pixels on the 1366 x 768 design, top-left origin
-LAYOUT = {
-    "lbl_user":   (415, 197, None),
-    "login_user": (408, 231, 509),
-    "lbl_pwd":    (416, 299, None),
-    "login_pwd":  (408, 334, 509),
-    "forgot_btn": (420, 406, None),
-    "login_btn":  (517, 448, 254),
-    "signup_btn": (499, 525, 298),
-}
+# name: (x, y, width) -> pixels on the 1366 x 768 design, top-left origin
+CARD_CX = 666
+FIELD_W = 480
+FIELD_X = CARD_CX - FIELD_W // 2
+TEXT_X = FIELD_X + 10
+LOGIN_W, SIGNUP_W = 254, 298
 
-st.set_page_config(
-    page_title="PlantPulse | Login",
-    page_icon="🌿",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+LAYOUT = {
+    "lbl_user": (TEXT_X, 189, None),
+    "login_user": (FIELD_X, 223, FIELD_W),
+    "lbl_pwd": (TEXT_X, 291, None),
+    "login_pwd": (FIELD_X, 325, FIELD_W),
+    "forgot_btn": (TEXT_X, 391, None),
+    "login_btn": (CARD_CX - LOGIN_W // 2, 433, LOGIN_W),
+    "signup_btn": (CARD_CX - SIGNUP_W // 2, 510, SIGNUP_W),
+}
 
 
 # ----------------------------------------------------------------------------
 # ASSET HELPERS
 # ----------------------------------------------------------------------------
 def find_background():
+    """Find the login background in assets/ or beside this Python file."""
     for folder in (ASSET_DIR, Path(__file__).parent):
         for ext in ("png", "jpg", "jpeg", "webp"):
             path = folder / f"{BG_STEM}.{ext}"
@@ -52,16 +63,22 @@ def find_background():
 @st.cache_data(show_spinner=False)
 def image_data_uri(path_str: str) -> str:
     path = Path(path_str)
-    mime = {".png": "image/png", ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg", ".webp": "image/webp"}[path.suffix.lower()]
+    mime_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    mime = mime_types.get(path.suffix.lower())
+    if mime is None:
+        raise ValueError(f"Unsupported background image type: {path.suffix}")
     return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
 
 
 # ----------------------------------------------------------------------------
 # STYLES
 # ----------------------------------------------------------------------------
-# "@{N}" = N pixels of the 1366-wide design, converted to cqw (1cqw = 1% of the
-# stage width) so fonts, borders and sizes scale together with the background.
+# "@{N}" means N pixels in the 1366px reference design, converted to cqw.
 BASE_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap');
@@ -74,18 +91,19 @@ BASE_CSS = """
     --hand: 'Patrick Hand', 'Comic Sans MS', cursive;
 }
 
-/* ---------- page shell ---------- */
-.stApp, [data-testid="stAppViewContainer"] { background: #ecf8e9; font-family: var(--hand); }
+.stApp, [data-testid="stAppViewContainer"] {
+    background: #ecf8e9;
+    font-family: var(--hand);
+}
 header[data-testid="stHeader"], [data-testid="stToolbar"],
-[data-testid="stDecoration"], footer, #MainMenu { display: none !important; }
+[data-testid="stDecoration"], footer, #MainMenu {
+    display: none !important;
+}
 .block-container, [data-testid="stMainBlockContainer"] {
     max-width: 100% !important;
     padding: 0 !important;
 }
 
-/* ---------- stage: the background image, scaled to COVER the whole screen ---------- */
-/* Same maths as background-size: cover, but on a box the widgets are pinned to,
-   so the labels / inputs / buttons stay exactly inside the card. */
 .st-key-stage {
     position: fixed;
     top: 50%;
@@ -101,7 +119,6 @@ header[data-testid="stHeader"], [data-testid="stToolbar"],
     container-type: inline-size;
 }
 
-/* ---------- labels ---------- */
 .st-key-stage .pp-label {
     font-family: var(--hand);
     font-size: @{26};
@@ -110,9 +127,11 @@ header[data-testid="stHeader"], [data-testid="stToolbar"],
     color: var(--leaf-soft);
 }
 .st-key-lbl_user [data-testid="stMarkdownContainer"],
-.st-key-lbl_pwd  [data-testid="stMarkdownContainer"] { margin: 0; padding: 0; }
+.st-key-lbl_pwd [data-testid="stMarkdownContainer"] {
+    margin: 0;
+    padding: 0;
+}
 
-/* ---------- inputs: green rounded border ---------- */
 .st-key-login_user, .st-key-login_pwd {
     box-sizing: border-box;
     height: @{50};
@@ -124,11 +143,16 @@ header[data-testid="stHeader"], [data-testid="stToolbar"],
     box-shadow: @{9} @{10} @{12} rgba(0, 0, 0, 0.22);
     transition: border-color 0.15s;
 }
-.st-key-login_user:focus-within, .st-key-login_pwd:focus-within { border-color: #5fb82c; }
+.st-key-login_user:focus-within, .st-key-login_pwd:focus-within {
+    border-color: #5fb82c;
+}
 
-/* strip Streamlit's own field chrome so only the green border shows */
-:is(.st-key-login_user, .st-key-login_pwd) :is([data-testid="stTextInput"],
-    [data-testid="stTextInputRootElement"], [data-baseweb="input"], [data-baseweb="base-input"]) {
+:is(.st-key-login_user, .st-key-login_pwd) :is(
+    [data-testid="stTextInput"],
+    [data-testid="stTextInputRootElement"],
+    [data-baseweb="input"],
+    [data-baseweb="base-input"]
+) {
     width: 100%;
     height: @{44};
     min-height: 0;
@@ -145,15 +169,20 @@ header[data-testid="stHeader"], [data-testid="stToolbar"],
     font-size: @{21};
     color: var(--leaf-dark);
 }
-/* keep the (visually hidden) labels for screen readers */
 :is(.st-key-login_user, .st-key-login_pwd) [data-testid="stWidgetLabel"] {
-    position: absolute; width: 1px; height: 1px; margin: 0; padding: 0;
-    overflow: hidden; clip: rect(0 0 0 0);
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
 }
-:is(.st-key-login_user, .st-key-login_pwd) button,          /* password "eye" icon */
-:is(.st-key-login_user, .st-key-login_pwd) [data-testid="InputInstructions"] { display: none !important; }
+:is(.st-key-login_user, .st-key-login_pwd) button,
+:is(.st-key-login_user, .st-key-login_pwd) [data-testid="InputInstructions"] {
+    display: none !important;
+}
 
-/* ---------- forgot password ---------- */
 .st-key-forgot_btn button {
     background: transparent !important;
     border: none !important;
@@ -169,11 +198,14 @@ header[data-testid="stHeader"], [data-testid="stToolbar"],
     font-weight: 700;
     color: var(--leaf-dark);
 }
-.st-key-forgot_btn button:hover p { text-decoration: underline; }
+.st-key-forgot_btn button:hover p {
+    text-decoration: underline;
+}
 
-/* ---------- login button ---------- */
 .st-key-login_btn [data-testid="stButton"],
-.st-key-signup_btn [data-testid="stButton"] { width: 100%; }
+.st-key-signup_btn [data-testid="stButton"] {
+    width: 100%;
+}
 .st-key-login_btn button {
     width: 100%;
     height: @{57};
@@ -191,10 +223,13 @@ header[data-testid="stHeader"], [data-testid="stToolbar"],
     line-height: 1;
     color: #fff;
 }
-.st-key-login_btn button:hover { filter: brightness(1.06); }
-.st-key-login_btn button:active { transform: translateY(1px); }
+.st-key-login_btn button:hover {
+    filter: brightness(1.06);
+}
+.st-key-login_btn button:active {
+    transform: translateY(1px);
+}
 
-/* ---------- sign-up button ---------- */
 .st-key-signup_btn button {
     width: 100%;
     height: @{49};
@@ -213,86 +248,109 @@ header[data-testid="stHeader"], [data-testid="stToolbar"],
     color: var(--leaf-soft);
     white-space: nowrap;
 }
-.st-key-signup_btn button:hover { background: #e0f4da !important; }
+.st-key-signup_btn button:hover {
+    background: #e0f4da !important;
+}
 
-/* ---------- simple pages (reset-password placeholder) ---------- */
-.st-key-plain { max-width: 560px; margin: 12vh auto 0; padding: 0 1rem; }
+.st-key-plain {
+    max-width: 560px;
+    margin: 12vh auto 0;
+    padding: 0 1rem;
+}
 </style>
 """
 
 
 def layout_css() -> str:
-    """Absolute position of every element, as % of the stage."""
+    """Position each widget as a percentage of the responsive background stage."""
     rules = []
-    for name, (x, y, w) in LAYOUT.items():
-        width = f"width: {w / REF_W * 100:.4f}%;" if w else ""
+    for name, (x, y, width_px) in LAYOUT.items():
+        width_rule = (
+            f"width: {width_px / REF_W * 100:.4f}%;"
+            if width_px is not None
+            else ""
+        )
         rules.append(
             f".st-key-{name} {{ position: absolute; margin: 0; "
-            f"left: {x / REF_W * 100:.4f}%; top: {y / REF_H * 100:.4f}%; {width} }}"
+            f"left: {x / REF_W * 100:.4f}%; "
+            f"top: {y / REF_H * 100:.4f}%; {width_rule} }}"
         )
     return "<style>" + "\n".join(rules) + "</style>"
 
 
 def inject_styles(bg_uri=None) -> None:
-    css = BASE_CSS.replace("%%BG%%", f'url("{bg_uri}")' if bg_uri else "none")
+    background = f'url("{bg_uri}")' if bg_uri else "none"
+    css = BASE_CSS.replace("%%BG%%", background)
     css = re.sub(
         r"@\{(\d+(?:\.\d+)?)\}",
-        lambda m: f"{float(m.group(1)) / REF_W * 100:.4f}cqw",
+        lambda match: (
+            f"{float(match.group(1)) / REF_W * 100:.4f}cqw"
+        ),
         css,
     )
     st.markdown(css + layout_css(), unsafe_allow_html=True)
 
 
 # ----------------------------------------------------------------------------
-# ACTIONS
+# ACTIONS / AUTHENTICATION
 # ----------------------------------------------------------------------------
 def go(page: str) -> None:
     st.session_state.page = page
 
 
 def handle_login() -> None:
+    """Authenticate using the existing FloraPulse backend API."""
     user = st.session_state.get("login_user", "").strip()
-    pwd = st.session_state.get("login_pwd", "")
-    if not user or not pwd:
+    password = st.session_state.get("login_pwd", "")
+
+    if not user or not password:
         st.toast("Please enter credentials", icon="⚠️")
         return
 
     try:
         response = requests.post(
             f"{BACKEND_URL}/api/auth/login",
-            json={"username": user, "password": pwd},
+            json={"username": user, "password": password},
             timeout=10,
         )
+
         if response.status_code == 200:
             data = response.json()
             token = data.get("access_token")
-            if token:
-                st.session_state.user = user
-                st.session_state.auth_token = token
-                st.session_state.is_admin = data.get("is_admin", False)
-                st.session_state.username = data.get("username", "")
-                st.session_state.pop("plants", None)  # clear cached plants
-                st.toast("Login successful! ✅", icon="✅")
-                time.sleep(1)
 
-# st.experimental_rerun()  # removed to avoid interfering navigation
-# st.experimental_rerun()  # removed to allow proper navigation
-            else:
+            if not token:
                 st.toast("Login failed: No token received.", icon="⚠️")
+                return
+
+            # Keep the original backend/session contract unchanged.
+            st.session_state.user = user
+            st.session_state.auth_token = token
+            st.session_state.is_admin = data.get("is_admin", False)
+            st.session_state.username = data.get("username", "")
+            st.session_state.pop("plants", None)
+
+            st.toast("Login successful! ✅", icon="✅")
+            # Streamlit reruns after the button callback. The authenticated
+            # redirect below then sends the user to pages/4_Create.py.
         else:
             try:
-                err_msg = response.json().get("detail", response.text)
-            except Exception:
-                err_msg = response.text
-            st.toast(f"Login error: {err_msg}", icon="❌")
-    except requests.RequestException as e:
-        st.toast(f"Login request failed: {e}", icon="❌")
+                error_data = response.json()
+                error_message = error_data.get("detail", response.text)
+            except (ValueError, requests.exceptions.JSONDecodeError):
+                error_message = response.text
+
+            st.toast(f"Login error: {error_message}", icon="❌")
+
+    except requests.RequestException as error:
+        st.toast(f"Login request failed: {error}", icon="❌")
 
 
 def go_to_signup() -> None:
     st.switch_page("pages/3_Sign_Up.py")
 
-if st.session_state.get("auth_token", False):
+
+# If a valid token is already in the session, skip the login screen.
+if st.session_state.get("auth_token"):
     st.switch_page("pages/4_Create.py")
 
 
@@ -300,52 +358,75 @@ if st.session_state.get("auth_token", False):
 # PAGES
 # ----------------------------------------------------------------------------
 def login_page() -> None:
-    bg = find_background()
-    if bg is None:
-        st.error(f"Background image not found. Save it as '{BG_STEM}.png' in: {ASSET_DIR}")
+    background = find_background()
+    if background is None:
+        st.error(
+            f"Background image not found. Save it as '{BG_STEM}.png' in: "
+            f"{ASSET_DIR}"
+        )
         st.stop()
-    inject_styles(image_data_uri(str(bg)))
+
+    inject_styles(image_data_uri(str(background)))
 
     with st.container(key="stage"):
         with st.container(key="lbl_user"):
-            st.markdown('<div class="pp-label">Enter Username or Email</div>',
-                        unsafe_allow_html=True)
-        st.text_input("Username or email", key="login_user",
-                      label_visibility="collapsed")
+            st.markdown(
+                '<div class="pp-label">Enter Username or Email</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.text_input(
+            "Username or email",
+            key="login_user",
+            label_visibility="collapsed",
+        )
 
         with st.container(key="lbl_pwd"):
-            st.markdown('<div class="pp-label">Enter Password</div>',
-                        unsafe_allow_html=True)
-        st.text_input("Password", type="password", key="login_pwd",
-                      label_visibility="collapsed")
+            st.markdown(
+                '<div class="pp-label">Enter Password</div>',
+                unsafe_allow_html=True,
+            )
 
-        # Forgot password button
-        st.button("Forgot password?", key="forgot_btn", on_click=go, args=("forgot",))
-        # Login button
+        st.text_input(
+            "Password",
+            type="password",
+            key="login_pwd",
+            label_visibility="collapsed",
+        )
+
+        st.button(
+            "Forgot password?",
+            key="forgot_btn",
+            on_click=go,
+            args=("forgot",),
+        )
         st.button("Login", key="login_btn", on_click=handle_login)
-        # Sign up navigation button
-        if st.button("Create account ? Sign up ➔", key="signup_btn"):
-            st.switch_page("pages/3_Sign_Up.py")
+        st.button(
+            "Create account ? Sign up ➔",
+            key="signup_btn",
+            on_click=go_to_signup,
+        )
 
 
 def simple_page(title: str, message: str) -> None:
-    # this page doesn't use the stage, so only the base shell styles apply
     inject_styles()
     with st.container(key="plain"):
         st.title(title)
         st.write(message)
-        st.button("← Back to login", key="back_btn", on_click=go, args=("login",))
+        st.button(
+            "← Back to login",
+            key="back_btn",
+            on_click=go,
+            args=("login",),
+        )
 
 
 # ----------------------------------------------------------------------------
 # ROUTER
 # ----------------------------------------------------------------------------
-st.session_state.setdefault("page", "login")
 page = st.session_state.page
 
 if page == "forgot":
     simple_page("Reset your password", "Password-reset form goes here.")
 else:
     login_page()
- 
- 

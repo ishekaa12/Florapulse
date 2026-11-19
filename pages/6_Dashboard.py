@@ -1,6 +1,25 @@
+"""
+Smart Garden | Dashboard
+
+Layout
+------
+Everything lives on ONE fixed 1366 x 768 design grid that is scaled to the window
+(--u = screen pixels per design pixel) and centred. Cards, text blocks and every
+Streamlit widget are pinned to rectangles on that grid, so alignment never depends
+on Streamlit's own spacing:
+
+    margin 28 | nav 232 | gutter 20 | content 1058 | margin 28
+    header   y 22-86
+    row 1    y 100-408  health | next watering | weather (weather spans rows 1-2)
+    row 2    y 428-588  pump
+    row 3    y 608-740  live sensor readings
+
+All rectangles are defined once in the GEOMETRY section below.
+"""
 import base64
+import html as _html
 import re
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 
 import pandas as pd
@@ -15,20 +34,9 @@ st.set_page_config(
 )
 
 # ==================================================
-# CONFIG
+# BACKEND CONFIG
 # ==================================================
 BACKEND_URL = "http://localhost:8000"
-WATER_THRESHOLD = 35  # matches backend settings.moisture_threshold_dry
-
-# Edit here if you rename pages (e.g. 9_Sensors.py -> 10_Sensors.py)
-PAGES = {
-    "Settings": "pages/10_Settings.py",
-    "Analytics": "pages/11_Analytics.py",
-    "Sensors": "pages/9_Sensors.py",
-    "Weather Forecast": "pages/12_Weather.py",
-    "About us": "pages/7_About.py",
-    "Profile": "pages/8_Profile.py",
-}
 
 # ==================================================
 # AUTH GUARD
@@ -46,60 +54,158 @@ if st.session_state.get("auth_token") is None:
 # PATHS & CONSTANTS
 # ==================================================
 ASSETS = Path(__file__).parent / "assets"
-NAV = [
-    ("Dashboard", "🏠"),
-    ("My plants", "🪴"),
-    ("Weather Forecast", "⛅"),
-    ("Sensors", "📡"),
-    ("Analytics", "📊"),
-    ("About us", "ℹ️"),
-    ("Settings", "⚙️"),
-]
-ART = {"plant": "plant.png", "can": "watering_can.png", "pump": "pump.png"}
 
-LAYOUT = {
-    "nav": (0, 0, 227, 697),
-    "health": (268, 40, 380, 303),
-    "water": (648, 40, 309, 303),
-    "weather": (957, 40, 325, 503),
-    "pump": (268, 372, 689, 171),
-    "sensors": (268, 573, 1014, 124),
-    "panel": (268, 40, 1014, 657),
+# (label, widget key, icon)  - icons are drawn with CSS so every label lines up
+NAV = [
+    ("Dashboard", "nav_dashboard", "🏠"),
+    ("My plants", "nav_plants", "🪴"),
+    ("Weather Forecast", "nav_weather", "⛅"),
+    ("Sensors", "nav_sensors", "📡"),
+    ("Analytics", "nav_analytics", "📊"),
+    ("About us", "nav_about", "ℹ️"),
+    ("Settings", "nav_settings", "⚙️"),
+]
+PAGE_MAP = {
+    "Settings": "pages/10_Settings.py",
+    "Analytics": "pages/11_Analytics.py",
+    "Sensors": "pages/9_Sensors.py",
+    "Weather Forecast": "pages/12_Weather.py",
+    "About us": "pages/7_About.py",
+    "Profile": "pages/8_Profile.py",
 }
+ART = {"plant": "plant.png", "can": "watering_can.png"}
+ART_SIZE = {"plant": (58, 56), "can": (54, 58)}
+clamp = lambda v, lo, hi: max(lo, min(hi, v))
+esc = lambda s: _html.escape(str(s))
+
+# ==================================================
+# GEOMETRY  (design pixels on the 1366 x 768 grid)
+# ==================================================
+GUT = 20                                   # gap between all cards
+PAD = 22                                   # inner padding of a card (border included)
+
+NAV_R = (28, 100, 232, 640)
+HEALTH_R = (280, 100, 350, 308)
+WATER_R = (650, 100, 350, 308)
+WEATHER_R = (1020, 100, 318, 488)
+PUMP_R = (280, 428, 720, 160)
+SENS_R = (280, 608, 1058, 132)
+PANEL_R = (280, 100, 1058, 640)
+
+
+def inner(r, pad=PAD):
+    x, y, w, h = r
+    return x + pad, y + pad, w - 2 * pad, h - 2 * pad
+
+
+# ---- header -----------------------------------------------------------------
+GREET_R = (28, 22, 760, 60)
+WHO_R = (1060, 28, 220, 42)
+AVATAR_R = (1292, 26, 46, 46)
+
+# ---- nav card (inner padding 14, so buttons are 204 wide) --------------------
+_nx, _ny, _nw, _nh = NAV_R
+NAV_IX, NAV_IW = _nx + 14, _nw - 28
+BRAND_R = (_nx + 22, _ny + 20, _nw - 44, 40)
+NAV_BTN_Y0, NAV_BTN_H, NAV_BTN_PITCH = _ny + 72, 44, 52
+SNAP_R = (NAV_IX, _ny + 460, NAV_IW, 56)
+LIVE_R = (NAV_IX + 8, _ny + 526, NAV_IW - 8, 30)
+LOGOUT_R = (NAV_IX, _ny + 566, NAV_IW, 44)
+
+# ---- plant health ------------------------------------------------------------
+hx, hy, hw, hh = inner(HEALTH_R)
+HEALTH_HDR_R = (hx, hy, hw, 54)
+SEL_PLANT_R = (hx, hy + 62, hw, 40)
+HEALTH_ROW_R = (hx, hy + 116, hw, 136)
+
+# ---- next watering -----------------------------------------------------------
+wx, wy, ww, wh = inner(WATER_R)
+WATER_HDR_R = (wx, wy, ww, 54)
+PILL_R = (wx, wy + 62, ww, 52)
+MINI_R = (wx, wy + 122, ww, 20)
+RULE_R = (wx, wy + 150, ww, 1)
+SCHED_LBL_R = (wx, wy + 160, 150, 16)
+SCHED_R = (wx, wy + 178, 150, 36)
+AUTO_SCHED_R = (wx + 166, wy + 180, ww - 166, 32)
+WATER_NOW_R = (wx, wy + 224, ww, 40)
+
+# ---- weather -----------------------------------------------------------------
+cx, cy, cw, ch = inner(WEATHER_R)
+WEATHER_HDR_R = (cx, cy, cw, 26)
+CITY_R = (cx, cy + 38, 160, 38)
+UNIT_R = (cx + 170, cy + 38, cw - 170, 38)
+WNOW_R = (cx, cy + 90, cw, 50)
+CHIPS_R = (cx, cy + 152, cw, 46)
+WLIST_R = (cx, cy + 212, cw, 150)
+TIP_R = (cx, cy + 376, cw, 52)
+
+# ---- pump --------------------------------------------------------------------
+px_, py_, pw_, ph_ = inner(PUMP_R)
+PUMP_TITLE_R = (px_, py_, pw_, 26)
+PUMP_STATUS_R = (px_, py_ + 36, 228, 80)
+PUMP_VR1_R = (px_ + 238, py_ + 40, 1, 72)
+MODE_LBL_R = (px_ + 254, py_ + 38, 184, 16)
+MODE_R = (px_ + 254, py_ + 54, 184, 30)
+PUMP_ON_R = (px_ + 254, py_ + 88, 184, 28)
+PUMP_VR2_R = (px_ + 454, py_ + 40, 1, 72)
+THR_LBL_R = (px_ + 470, py_ + 38, 206, 18)
+THR_R = (px_ + 470, py_ + 60, 206, 56)
+
+# ---- sensors -----------------------------------------------------------------
+SENS_IN_R = inner(SENS_R)
+
+# widgets pinned on the grid: Streamlit key -> rectangle
+WIDGETS = {
+    "profile": AVATAR_R,
+    "live": LIVE_R,
+    "logout": LOGOUT_R,
+    "sel_plant": SEL_PLANT_R,
+    "sched": SCHED_R,
+    "auto_sched": AUTO_SCHED_R,
+    "water_now": WATER_NOW_R,
+    "dash_city": CITY_R,
+    "dash_unit": UNIT_R,
+    "mode": MODE_R,
+    "pump_on": PUMP_ON_R,
+    "thr": THR_R,
+}
+for _i, (_label, _key, _icon) in enumerate(NAV):
+    WIDGETS[_key] = (NAV_IX, NAV_BTN_Y0 + _i * NAV_BTN_PITCH, NAV_IW, NAV_BTN_H)
+
 
 # ==================================================
 # BACKEND API
 # ==================================================
-def api(method: str, path: str, **kw):
-    """Call the backend. Returns (json, error). A 401 sends the user to login."""
+WATER_THRESHOLD = 35
+
+def api(method: str, path: str, **kwargs):
+    """Authenticated backend request. Returns (JSON, error)."""
     token = st.session_state.get("auth_token")
+    if not token:
+        return None, "You are not logged in."
     try:
-        r = requests.request(
-            method,
-            f"{BACKEND_URL}{path}",
+        response = requests.request(
+            method, f"{BACKEND_URL}{path}",
             headers={"Authorization": f"Bearer {token}"},
-            timeout=8,
-            **kw,
+            timeout=10, **kwargs
         )
     except requests.exceptions.RequestException:
         return None, "Cannot reach backend. Is it running?"
 
-    if r.status_code == 401:
+    if response.status_code == 401:
         st.session_state.auth_token = None
-        st.toast("Session expired, please log in again")
+        st.toast("Session expired. Please log in again.")
         st.switch_page("pages/2_Login.py")
         st.stop()
-
-    if r.status_code >= 400:
+    if response.status_code >= 400:
         try:
-            return None, r.json().get("detail", f"Error {r.status_code}")
+            return None, response.json().get("detail", f"Error {response.status_code}")
         except ValueError:
-            return None, f"Error {r.status_code}"
-
+            return None, f"Backend error {response.status_code}"
     try:
-        return r.json(), None
+        return response.json(), None
     except ValueError:
-        return None, "Bad response from backend"
+        return {}, None
 
 
 def load_plants_from_backend() -> dict:
@@ -108,23 +214,25 @@ def load_plants_from_backend() -> dict:
         st.error(f"Could not load plants: {err}")
         return {}
     plants = {}
-    for p in data.get("plants", []):
-        name = p.get("name", f"Plant {p.get('id')}")
+    for item in (data or {}).get("plants", []):
+        name = item.get("name") or f"Plant {item.get('id')}"
         plants[name] = {
-            "id": p.get("id"), "emoji": "🌱",
+            "id": item.get("id"), "emoji": "🌱",
             "mlo": 30, "mhi": 70, "tlo": 16, "thi": 30,
-            "moisture": 0, "temp": 0, "hum": 0, "rain": False,
-            "has_data": False, "last_ts": None, "hist": [],
+            "moisture": 0, "temp": 0, "hum": 0, "light": 0,
+            "rain": False, "has_data": False, "last_ts": None, "hist": [],
         }
     return plants
 
 
 def load_sensor_history(plant_id: int, limit: int = 60) -> list:
-    data, _ = api("GET", "/api/sensor-data/history",
-                  params={"plant_id": plant_id, "limit": limit})
+    data, err = api("GET", "/api/sensor-data/history",
+                    params={"plant_id": plant_id, "limit": limit})
+    if err:
+        st.warning(f"Could not load sensor history: {err}")
+        return []
     readings = (data or {}).get("readings", [])
-    # Oldest first, so readings[-1] is always the latest
-    return sorted(readings, key=lambda r: str(r.get("timestamp", "")))
+    return sorted(readings, key=lambda item: str(item.get("timestamp", "")))
 
 
 def load_prediction(plant_id: int) -> dict:
@@ -142,166 +250,192 @@ def load_decision(plant_id: int) -> dict:
     return data or {}
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _weather_cached(token: str) -> dict:
-    # token is only the cache key; the call itself reads it from session state
-    data, _ = api("GET", "/api/weather/current")
-    return data or {}
-
-
 def load_weather() -> dict:
-    w = _weather_cached(st.session_state.auth_token)
-    if not w:
-        _weather_cached.clear()  # don't keep a failed result for 5 minutes
-    return w
+    data, err = api("GET", "/api/weather/current")
+    return {} if err else (data or {})
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def get_current_user(token: str) -> str:
     data, _ = api("GET", "/api/auth/me")
     return (data or {}).get("username", "Gardener")
+
 
 # ==================================================
 # STYLES
 # ==================================================
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&family=Nunito:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&family=Nunito:wght@400;600;700;800&display=swap');
 :root{--u:min(100vw / 1366, 100vh / 768);--line:#6b9a22;--ink:#2b3f12;--mute:#68803a;--soft:#f3f9ec;
       --good:#6aaa4a;--warn:#e0a030;--bad:#d0583a;--head:'Fredoka','Nunito',sans-serif}
+html,body{overflow:hidden!important}
 html,body,.stApp,.stApp *:not([data-testid="stIconMaterial"]),[data-baseweb="popover"] *{font-family:'Nunito','Segoe UI',sans-serif}
-.h,.brand,.big,.mv,.ring b,.wnow b,.stt b,.pst b,.greet,.avatar-name,.chips b,.stats b,.snap b{font-family:var(--head)!important}
-.stApp{background:%%BG%% center / cover no-repeat fixed;font-size:@{15}}
+.h,.gt,.brand,.who b,.ring b,.wnow b,.pst b,.stt b,.mv,.chips b,.stats b,.snap b,.avatar-name{font-family:var(--head)!important}
+
+/* ---------- page shell: no scrolling, one fixed stage ---------- */
+.stApp{background:%%BG%% center / cover no-repeat fixed}
 header,[data-testid="stHeader"],[data-testid="stToolbar"],[data-testid="stDecoration"],footer,#MainMenu{display:none!important}
-.block-container,[data-testid="stMainBlockContainer"]{max-width:100%!important;padding:@{38} 0 0!important}
-.st-key-stage{position:relative;width:@{1282};height:@{697};margin:0 auto;gap:0}
-
-:is(.st-key-nav,.st-key-health,.st-key-water,.st-key-weather,.st-key-pump,.st-key-sensors,.st-key-panel){
-  position:absolute;box-sizing:border-box;background:#fff;color:var(--ink);overflow:hidden;
-  border:max(2px,@{3}) solid var(--line);border-radius:@{36};padding:@{20} @{24};gap:@{8};
-  box-shadow:@{9} @{11} @{16} rgba(0,0,0,.2)}
-:is(.st-key-nav,.st-key-health,.st-key-water,.st-key-weather,.st-key-pump,.st-key-sensors,.st-key-panel)>*{flex-shrink:0}
-.st-key-pump{padding:@{14} @{26}}
-.st-key-sensors{justify-content:center;padding:@{12} @{26}}
-.st-key-panel{overflow-y:auto}
+[data-testid="stAppViewContainer"],[data-testid="stMain"]{overflow:hidden!important}
+.block-container,[data-testid="stMainBlockContainer"]{max-width:100%!important;padding:0!important}
 .stApp [data-testid="stMarkdownContainer"] p{margin:0}
-[data-testid="stHorizontalBlock"]{gap:@{14}}
+.st-key-stage{position:fixed!important;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:@{1366}!important;height:@{768}!important;max-width:none!important;min-width:0!important;
+  margin:0;gap:0;display:block!important}
+.st-key-shells{position:absolute;inset:0;margin:0;pointer-events:none}
 
+/* ---------- cards + text blocks (all absolutely positioned on the grid) ---------- */
+.card{position:absolute;box-sizing:border-box;background:#fff;border:max(2px,@{3}) solid var(--line);
+  border-radius:@{32};box-shadow:@{8} @{10} @{16} rgba(0,0,0,.18)}
+.blk{position:absolute;box-sizing:border-box;color:var(--ink)}
 .h{font-size:@{22};font-weight:500;line-height:1.15;color:var(--ink)}
-.hdr{display:flex;align-items:center;justify-content:space-between;gap:@{10};min-height:@{56}}
-.big{font-size:@{40};font-weight:500;line-height:1.05}
-.sub{font-size:@{14};color:var(--mute)}
-[data-testid="stWidgetLabel"] p{font-size:@{14};color:var(--mute)}
-[data-baseweb="select"]>div{min-height:@{38};height:@{38};border-radius:@{12};background:var(--soft);border-color:#b9d98f}
-[data-baseweb="select"] *{font-size:@{15}}
-[data-testid="stCaptionContainer"] p,[data-testid="stToggle"] p,[data-testid="stRadio"] label p{font-size:@{14};color:var(--ink)}
-[data-baseweb="checkbox"]:has(input:checked)>:is(div,span):first-child{background:var(--good)!important}
-[data-baseweb="radio"]:has(input:checked)>:is(div,span):first-child{background:var(--good)!important;border-color:var(--good)!important}
-
+.sub{font-size:@{14};line-height:1.3;color:var(--mute);margin-top:@{3}}
+.lbl{font-size:@{13};line-height:1.2;font-weight:600;color:var(--mute)}
+.rule{background:#e3eed3}
+.vr{background:#e3eed3;width:100%;height:100%}
+.hdr{display:flex;align-items:flex-start;justify-content:space-between;gap:@{10};height:100%}
 .art{flex:none;background:center / contain no-repeat}
 %%ART%%
+.tag{flex:none;font-size:@{11};font-weight:700;color:var(--mute);background:var(--soft);border-radius:999px;padding:@{3} @{9}}
 
-.st-key-nav{gap:@{5}}
-.brand{display:flex;align-items:center;gap:@{10};font-size:@{21};font-weight:500;white-space:nowrap;padding:@{2} 0 @{6}}
-.brand i{width:@{38};height:@{38};border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:@{20};
-  background:linear-gradient(135deg,#dff2c6,#b9e08a)}
-.st-key-nav button{justify-content:flex-start!important;gap:@{8};width:100%;min-height:0;height:@{42};padding:0 @{14};
-  border:none!important;border-radius:@{21};background:transparent!important;box-shadow:none!important;
-  transition:transform .15s ease,background .15s ease}
-.st-key-nav button p{font-size:@{17};font-weight:600;color:var(--ink);white-space:nowrap}
-.st-key-nav button:hover{background:#eaf5dc!important;transform:translateX(@{4})}
-.st-key-nav button:is([kind=primary],[data-testid=stBaseButton-primary]){
-  background:linear-gradient(90deg,#d9efc0,#eef8e2)!important;box-shadow:inset @{4} 0 0 var(--line)!important}
-.st-key-nav button:is([kind=primary],[data-testid=stBaseButton-primary]) p{font-weight:700}
-@media (prefers-reduced-motion:reduce){.st-key-nav button:hover{transform:none}}
-.st-key-snapwrap{margin-top:auto}
-.snap{background:var(--soft);border-radius:@{18};padding:@{10} @{14};font-size:@{14};color:var(--mute)}
-.snap b{display:block;font-size:@{17};font-weight:500;color:var(--ink)}
-
-.st-key-profile{position:fixed;top:@{14};right:@{26};z-index:1000;flex-direction:row;align-items:center;gap:@{10};width:auto}
-.greet{font-size:@{17};font-weight:500;color:var(--ink);white-space:nowrap}
-.st-key-profile [data-testid="stPopover"] button{width:@{46};height:@{46};min-height:0;padding:0;border-radius:50%;
-  border:max(2px,@{3}) solid #fff;background:linear-gradient(135deg,#8fdc55,#5fa83a);
-  box-shadow:@{3} @{5} @{10} rgba(0,0,0,.25)}
-.st-key-profile [data-testid="stPopover"] button p{font-family:var(--head);font-size:@{20};color:#fff;font-weight:500}
-.st-key-profile [data-testid="stPopover"] button [data-testid="stIconMaterial"]{display:none}
+/* ---------- header: greeting + profile ---------- */
+.gt{font-size:@{30};font-weight:500;line-height:1.15;color:var(--ink)}
+.gs{font-size:@{15};line-height:1.3;color:var(--mute);margin-top:@{4}}
+.who{height:100%;display:flex;flex-direction:column;justify-content:center;text-align:right;line-height:1.2}
+.who b{font-size:@{17};font-weight:500}
+.who span{font-size:@{13};color:var(--mute)}
+.st-key-profile{height:@{46};width:@{46}}
+.st-key-profile [data-testid="stPopover"]{width:100%}
+.st-key-profile button{width:@{46}!important;height:@{46}!important;min-height:0!important;min-width:0!important;
+  padding:0!important;margin:0;display:flex!important;align-items:center;justify-content:center;
+  border-radius:50%!important;border:max(2px,@{3}) solid #fff!important;overflow:hidden;
+  background:linear-gradient(135deg,#8fdc55,#5fa83a)!important;box-shadow:@{3} @{5} @{10} rgba(0,0,0,.25)!important}
+.st-key-profile button>*{margin:0!important;padding:0!important;display:flex;align-items:center;justify-content:center}
+.st-key-profile button p{font-family:var(--head)!important;font-size:@{20};font-weight:500;line-height:1;color:#fff}
+.st-key-profile button [data-testid="stIconMaterial"],.st-key-profile button svg{display:none!important}
+[data-testid="stPopoverBody"]{border-radius:@{18}}
 .avatar-name{font-size:@{18};font-weight:500}
 
-:is(.st-key-water,.st-key-panel) button{width:100%;border:none;border-radius:999px;min-height:0;height:@{40};
-  background:linear-gradient(90deg,#8fdc55,#c9e25f);box-shadow:@{4} @{6} @{8} rgba(0,0,0,.2)}
-:is(.st-key-water,.st-key-panel) button p{font-size:@{17};font-weight:700;color:#fff}
+/* ---------- navigation ---------- */
+.brand{display:flex;align-items:center;gap:@{10};font-size:@{21};font-weight:500;white-space:nowrap;height:100%}
+.brand i{width:@{38};height:@{38};border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:@{20};
+  background:linear-gradient(135deg,#dff2c6,#b9e08a)}
+.snap{height:100%;display:flex;flex-direction:column;justify-content:center;background:var(--soft);
+  border-radius:@{16};padding:0 @{14};font-size:@{14};line-height:1.3;color:var(--mute)}
+.snap b{font-size:@{17};font-weight:500;color:var(--ink)}
+%%NAVBTN%%
+@media (prefers-reduced-motion:reduce){:is(%%NAVSEL%%) button:hover{transform:none}}
 
-.hrow{display:flex;align-items:center;gap:@{18}}
-.ring{flex:none;width:@{104};height:@{104};border-radius:50%;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;background:radial-gradient(closest-side,#fff 76%,transparent 78%),conic-gradient(var(--c) calc(var(--s) * 1%),#e4efd3 0)}
-.ring b{font-size:@{30};font-weight:500;line-height:1}.ring span{font-size:@{12};color:var(--mute)}
-.stats{flex:1;display:flex;flex-direction:column;gap:@{6}}
-.stats div{display:flex;justify-content:space-between;align-items:center;background:var(--soft);border-radius:@{12};padding:@{6} @{12};font-size:@{14};color:var(--mute)}
+/* ---------- native widgets: pinned + sized in design pixels ---------- */
+:is(%%WSEL%%){position:absolute;margin:0;display:flex;flex-direction:column;justify-content:center;z-index:3}
+:is(.st-key-sel_plant,.st-key-dash_city) [data-baseweb="select"]>div,
+.st-key-sched [data-baseweb="select"]>div{min-height:@{38};height:@{38};border-radius:@{12};background:var(--soft);border-color:#b9d98f}
+.st-key-sched [data-baseweb="select"]>div,.st-key-sched [data-baseweb="input"]{min-height:@{36};height:@{36}}
+:is(.st-key-sel_plant,.st-key-dash_city,.st-key-sched) [data-baseweb="select"] *,.st-key-sched input{font-size:@{15}}
+.st-key-sched [data-baseweb="input"]{border-radius:@{12};background:var(--soft)}
+.st-key-sched input{height:@{36};background:var(--soft)}
+[data-testid="stToggle"] p,[data-testid="stRadio"] label p{font-size:@{14};color:var(--ink)}
+[data-testid="stRadio"] [role="radiogroup"]{gap:@{14}}
+[data-baseweb="radio"]:has(input:checked)>:is(div,span):first-child{background:var(--good)!important;border-color:var(--good)!important}
+[data-baseweb="slider"] [role="slider"]{background:var(--good)!important;box-shadow:none!important}
+[data-testid="stSliderTickBarMin"],[data-testid="stSliderTickBarMax"],[data-testid="stThumbValue"]{font-size:@{12}}
+
+/* ---------- plant health ---------- */
+.hrow{display:flex;align-items:center;gap:@{18};height:100%}
+.ring{flex:none;width:@{116};height:@{116};border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:radial-gradient(closest-side,#fff 76%,transparent 78%),conic-gradient(var(--c) calc(var(--s) * 1%),#e4efd3 0)}
+.ring b{font-size:@{32};font-weight:500;line-height:1}
+.ring span{font-size:@{12};color:var(--mute)}
+.stats{flex:1;min-width:0;display:flex;flex-direction:column;gap:@{8}}
+.stats div{height:@{40};box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;
+  background:var(--soft);border-radius:@{12};padding:0 @{12};font-size:@{14};color:var(--mute)}
 .stats b{font-size:@{17};font-weight:500;color:var(--ink)}
 
-.wtop{display:flex;align-items:center;justify-content:space-between;min-height:@{60}}
-.pbox{background:var(--soft);border-radius:@{14};padding:@{8} @{12};font-size:@{15};font-weight:700;line-height:1.25}
-.pbox small{display:block;font-weight:400;font-size:@{13};color:var(--mute)}
-.pmini{display:grid;grid-template-columns:1fr 1fr;gap:@{8};margin-top:@{6}}
-.pmini div{background:var(--soft);border-radius:@{12};padding:@{6} @{10};font-size:@{13};color:var(--mute);text-align:center}
-.pmini b{display:block;font-size:@{17};font-weight:500;color:var(--ink);font-family:var(--head)}
+/* ---------- next watering ---------- */
+.pill{height:100%;box-sizing:border-box;display:flex;flex-direction:column;justify-content:center;gap:@{2};
+  border-radius:@{14};padding:0 @{16}}
+.pill b{font-size:@{16};font-weight:700;line-height:1.2}
+.pill span{font-size:@{13};line-height:1.2;opacity:.85}
+.pill.good{background:#e8f4d9;color:#2e5a14}
+.pill.warn{background:#fff3d6;color:#7a5410}
+.pill.bad{background:#fde4dd;color:#8a2f18}
+.pill.info{background:#e9f2fb;color:#24506e}
+.mini{display:flex;justify-content:space-between;font-size:@{13};line-height:1.4;color:var(--mute)}
+.mini b{color:var(--ink);font-weight:700}
+:is(.st-key-water_now,.st-key-panel) button{width:100%;border:none;border-radius:999px;min-height:0;height:@{40};
+  background:linear-gradient(90deg,#6fb23f,#93c548);box-shadow:@{3} @{5} @{8} rgba(0,0,0,.2);transition:filter .15s ease,transform .15s ease}
+:is(.st-key-water_now,.st-key-panel) button p{font-size:@{16};font-weight:700;color:#fff}
+:is(.st-key-water_now,.st-key-panel) button:hover{filter:brightness(.94);transform:translateY(-1px)}
 
-.wnow{display:flex;align-items:center;justify-content:center;gap:@{12};min-height:@{54}}
-.wnow span{font-size:@{40}}.wnow b{font-size:@{38};font-weight:500}
-.chips{display:grid;grid-template-columns:repeat(3,1fr);gap:@{8}}
-.chips div{text-align:center;font-size:@{13};color:var(--mute);background:var(--soft);border-radius:@{12};padding:@{5} 0}
-.chips b{display:block;font-size:@{17};font-weight:500;color:var(--ink)}
-.tip{font-size:@{14};background:#fff6dc;border-radius:@{12};padding:@{7} @{12};line-height:1.3}
-.src{font-size:@{12};color:var(--mute);text-align:center}
+/* ---------- weather ---------- */
+.wnow{height:100%;display:flex;align-items:center;justify-content:center;gap:@{12}}
+.wnow span{font-size:@{38}}
+.wnow b{font-size:@{38};font-weight:500}
+.chips{height:100%;display:grid;grid-template-columns:repeat(3,1fr);gap:@{8}}
+.chips div{box-sizing:border-box;display:flex;flex-direction:column;justify-content:center;text-align:center;
+  font-size:@{13};line-height:1.25;color:var(--mute);background:var(--soft);border-radius:@{12}}
+.chips b{font-size:@{16};font-weight:500;color:var(--ink)}
+.wlist{display:flex;flex-direction:column}
+.wrow{display:grid;grid-template-columns:@{54} @{30} 1fr @{62};align-items:center;font-size:@{14};height:@{30};
+  padding:0 @{8};border-radius:@{10}}
+.wrow:nth-child(odd){background:var(--soft)}
+.tip{height:100%;box-sizing:border-box;display:flex;align-items:center;font-size:@{14};line-height:1.3;
+  background:#fff6dc;border-radius:@{12};padding:0 @{12}}
 
-.pst{display:flex;align-items:center;gap:@{14}}.pst b{font-size:@{26};font-weight:500;display:block;line-height:1.1}
+/* ---------- pump ---------- */
+.pst{height:100%;display:flex;align-items:center;gap:@{14}}
+.pst b{font-size:@{28};font-weight:500;display:block;line-height:1.1}
 .pst small{font-size:@{14};color:var(--mute)}
-.dot{flex:none;width:@{40};height:@{40};border-radius:50%;background:#cfd8c3}
+.dot{flex:none;width:@{44};height:@{44};border-radius:50%;background:#cfd8c3}
 .dot.on{background:var(--good);animation:pulse 1.6s infinite}
-.dot.q{background:var(--warn)}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(106,170,74,.55)}100%{box-shadow:0 0 0 @{16} rgba(106,170,74,0)}}
 @media (prefers-reduced-motion:reduce){.dot.on{animation:none}}
-.dec{font-size:@{14};line-height:1.3}
-.dec b{font-family:var(--head);font-size:@{18};font-weight:500}
-.dec small{display:block;color:var(--mute);font-size:@{12}}
-.badge{display:inline-block;background:var(--soft);border-radius:999px;padding:@{3} @{12};font-size:@{13};color:var(--ink);margin-top:@{4}}
 
-.sens{display:grid;grid-template-columns:@{160} repeat(5,1fr);gap:@{22};align-items:center}
-.stt b{display:block;font-size:@{20};font-weight:500;line-height:1.1}
-.stt span{font-size:@{13};color:var(--mute)}
-.ml{font-size:@{14};color:var(--mute);display:flex;align-items:center;gap:@{6}}
+/* ---------- live sensor readings ---------- */
+.sens{height:100%;display:grid;grid-template-columns:@{170} repeat(5,1fr);gap:@{22};align-items:center}
+.stt b{display:block;font-size:@{20};font-weight:500;line-height:1.15}
+.stt span{display:block;font-size:@{13};line-height:1.3;color:var(--mute);margin-top:@{3};white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m{min-width:0}
+.ml{font-size:@{14};line-height:1.2;color:var(--mute);display:flex;align-items:center;gap:@{6};white-space:nowrap}
 .ml i{width:@{9};height:@{9};border-radius:50%}
-.mv{font-size:@{30};font-weight:500;line-height:1.15}.mv small{font-size:@{14};font-family:'Nunito'!important;color:var(--mute);margin-left:@{3}}
-.m svg,.bar{width:100%;height:@{20};display:block;margin-top:@{2}}
-.bar{background:#e4efd3;border-radius:@{10};position:relative;height:@{10};margin-top:@{9}}
+.mv{font-size:@{30};font-weight:500;line-height:1.15}
+.mv small{font-size:@{14};font-family:'Nunito'!important;color:var(--mute);margin-left:@{3}}
+.m svg{width:100%;height:@{20};display:block;margin-top:@{3}}
+.bar{width:100%;background:#e4efd3;border-radius:@{10};position:relative;height:@{10};margin-top:@{9}}
 .bar i{position:absolute;inset:0 auto 0 0;border-radius:@{10}}
+
+/* ---------- "My plants" panel (flowing content inside one card) ---------- */
+.st-key-panel{position:absolute;box-sizing:border-box;background:#fff;color:var(--ink);overflow-y:auto;
+  border:max(2px,@{3}) solid var(--line);border-radius:@{32};padding:@{22} @{26};gap:@{12};
+  box-shadow:@{8} @{10} @{16} rgba(0,0,0,.18);z-index:3}
+.st-key-add_plant{width:@{220}!important}
 .pcard{background:var(--soft);border-radius:@{18};padding:@{12};text-align:center;font-size:@{18};font-weight:600}
-.pcard span{font-size:@{34};display:block}.pcard i{display:block;font-style:normal;font-size:@{15};font-weight:400}
+.pcard span{font-size:@{34};display:block}
+.pcard i{display:block;font-style:normal;font-size:@{15};font-weight:400}
 </style>
 """
 
 
-def inject_css():
-    rules = "".join(
-        f".st-key-{k}{{left:@{{{x}}};top:@{{{y}}};width:@{{{w}}};height:@{{{h}}}}}"
-        for k, (x, y, w, h) in LAYOUT.items()
-    )
-    css = (CSS.replace("%%BG%%", bg_uri()).replace("%%ART%%", art_css())
-              .replace("</style>", rules + "</style>"))
-    css = re.sub(r"@\{(\d+(?:\.\d+)?)\}", r"calc(var(--u) * \1)", css)
-    st.markdown(css, unsafe_allow_html=True)
+def U(s: str) -> str:
+    """'@{N}' = N design pixels -> calc(var(--u) * N)."""
+    return re.sub(r"@\{(\d+(?:\.\d+)?)\}", r"calc(var(--u) * \1)", s)
+
+
+def rect_css(r) -> str:
+    x, y, w, h = r
+    return f"left:@{{{x}}};top:@{{{y}}};width:@{{{w}}};height:@{{{h}}}"
 
 
 @st.cache_data(show_spinner=False)
 def art_css() -> str:
-    size = {"plant": (68, 65), "can": (84, 90), "pump": (118, 88)}
     out = ""
     for key, fname in ART.items():
         p = ASSETS / fname
         if p.exists():
-            w, h = size[key]
-            out += (f".art-{key}{{width:@{{{w}}};height:@{{{h}}};"
-                    f"background-image:url(data:image/png;base64,{base64.b64encode(p.read_bytes()).decode()})}}")
+            w, h = ART_SIZE[key]
+            out += (
+                f".art-{key}{{width:@{{{w}}};height:@{{{h}}};"
+                f"background-image:url(data:image/png;base64,{base64.b64encode(p.read_bytes()).decode()})}}"
+            )
     return out
 
 
@@ -314,8 +448,55 @@ def bg_uri() -> str:
             return f'url("data:{mime};base64,{base64.b64encode(p.read_bytes()).decode()}")'
     return "linear-gradient(160deg,#e9f7df,#f3fbee 50%,#d8f0c4)"
 
+
+def build_css(bg: str = None, art: str = None) -> str:
+    nav_keys = [k for _, k, _ in NAV] + ["logout"]
+    nav_sel = ",".join(f".st-key-{k}" for k in nav_keys)
+    nav_btn = (
+        f":is({nav_sel}) button{{justify-content:flex-start!important;gap:@{{10}};width:100%;height:@{{44}};min-height:0;"
+        f"padding:0 @{{14}}!important;border:none!important;border-radius:@{{22}};background:transparent!important;"
+        f"box-shadow:none!important;transition:transform .15s ease,background .15s ease}}"
+        f":is({nav_sel}) button::before{{display:inline-flex;justify-content:center;flex:none;width:@{{26}};font-size:@{{18}}}}"
+        f":is({nav_sel}) button p{{font-size:@{{17}};font-weight:600;color:var(--ink);white-space:nowrap}}"
+        f":is({nav_sel}) button:hover{{background:#eaf5dc!important;transform:translateX(@{{4}})}}"
+        f":is({nav_sel}) button:is([kind=primary],[data-testid=stBaseButton-primary]){{"
+        f"background:linear-gradient(90deg,#d9efc0,#eef8e2)!important;box-shadow:inset @{{4}} 0 0 var(--line)!important}}"
+        f":is({nav_sel}) button:is([kind=primary],[data-testid=stBaseButton-primary]) p{{font-weight:700}}"
+        + "".join(f'.st-key-{k} button::before{{content:"{icon}"}}' for _, k, icon in NAV)
+        + '.st-key-logout button::before{content:"🚪"}'
+    )
+    widget_sel = ",".join(f".st-key-{k}" for k in WIDGETS)
+    rules = "".join(f".st-key-{k}{{{rect_css(r)}}}" for k, r in WIDGETS.items())
+    rules += f".st-key-panel{{{rect_css(PANEL_R)}}}"
+    css = (
+        CSS.replace("%%BG%%", bg if bg is not None else bg_uri())
+        .replace("%%ART%%", art if art is not None else art_css())
+        .replace("%%NAVBTN%%", nav_btn)
+        .replace("%%NAVSEL%%", nav_sel)
+        .replace("%%WSEL%%", widget_sel)
+        .replace("</style>", rules + "</style>")
+    )
+    return U(css)
+
+
+def inject_css() -> None:
+    st.markdown(build_css(), unsafe_allow_html=True)
+
+
+def pick(data: dict, *keys, default=None):
+    for key in keys:
+        if data.get(key) is not None:
+            return data[key]
+    return default
+
+
+def current_plant_id():
+    plant = st.session_state.plants.get(st.session_state.get("sel_plant")) or {}
+    return plant.get("id")
+
+
 # ==================================================
-# HELPERS
+# HELPER FUNCTIONS
 # ==================================================
 def health(p: dict) -> int:
     fit = lambda v, lo, hi, tol: 1 - min(1, max(lo - v, v - hi, 0) / tol)
@@ -329,45 +510,29 @@ def health(p: dict) -> int:
 def status(score: int):
     if score >= 80:
         return ("Thriving", "var(--good)")
-    if score >= 60:
+    elif score >= 60:
         return ("Doing okay", "var(--warn)")
-    return ("Needs care", "var(--bad)")
+    else:
+        return ("Needs care", "var(--bad)")
 
 
 def T(c: float) -> str:
-    if st.session_state.get("unit", "°C") == "°F":
+    if st.session_state.get("dash_unit", "°C") == "°F":
         return f"{c * 9 / 5 + 32:.0f}°F"
     return f"{c:.0f}°C"
 
 
-
 def html(s: str) -> None:
-    st.markdown(s, unsafe_allow_html=True)
+    st.markdown(U(s), unsafe_allow_html=True)
 
-def placeholder(key: str, title: str) -> None:
-    with st.container(key=key):
-        html(f'<div class="h">{title}</div><div class="sub">Select a plant to see this.</div>')    
-
-
-def pick(d: dict, *keys, default=None):
-    """First key present in d with a non-None value (tolerates backend key naming)."""
-    for k in keys:
-        if d.get(k) is not None:
-            return d[k]
-    return default
-
-
-def current_plant_id():
-    ss = st.session_state
-    return (ss.plants.get(ss.sel_plant) or {}).get("id")
 
 # ==================================================
 # CALLBACKS
 # ==================================================
 def go(view: str) -> None:
     st.session_state.view = view
-    if view in PAGES:
-        st.switch_page(PAGES[view])
+    if view in PAGE_MAP:
+        st.switch_page(PAGE_MAP[view])
 
 
 def open_plant(name: str) -> None:
@@ -376,46 +541,249 @@ def open_plant(name: str) -> None:
 
 
 def water_now() -> None:
-    pid = current_plant_id()
-    if not pid:
-        st.toast("⚠️ No plant selected")
+    plant_id = current_plant_id()
+    if not plant_id:
+        st.toast("⚠️ Select a plant first.")
         return
-    _, err = api("POST", f"/api/plants/{pid}/water-now")
+    _, err = api("POST", f"/api/plants/{plant_id}/water-now")
     if err:
         st.toast(f"⚠️ {err}")
     else:
-        st.toast("✅ Queued. Pump starts at the device's next check-in (≤30s)")
+        st.toast("💧 Watering command queued. The pump starts at the device's next check-in (up to 30 seconds).")
 
 
 def logout() -> None:
     st.session_state.auth_token = None
+    st.session_state.pop("plants", None)
     st.toast("Logged out")
     st.switch_page("pages/2_Login.py")
 
+
 # ==================================================
-# CARDS
+# HTML BUILDERS  (pure functions: data in, markup out)
 # ==================================================
-def nav() -> None:
+def card(r, cls: str = "") -> str:
+    return f'<div class="card {cls}" style="{rect_css(r)}"></div>'
+
+
+def blk(r, body: str, cls: str = "") -> str:
+    return f'<div class="blk {cls}" style="{rect_css(r)}">{body}</div>'
+
+
+def greeting_parts(name: str, now: datetime):
+    h = now.hour
+    part, icon = ("morning", "☀️") if h < 12 else ("afternoon", "🌤️") if h < 17 else ("evening", "🌙")
+    return f"Good {part}, {esc(name)} {icon}", f"{now:%A}, {now.day} {now:%B} · Here’s how your garden is doing today"
+
+
+def header_html(name: str, now: datetime) -> str:
+    title, sub = greeting_parts(name, now)
+    return (
+        blk(GREET_R, f'<div class="gt">{title}</div><div class="gs">{sub}</div>')
+        + blk(WHO_R, f'<div class="who"><b>{esc(name)}</b><span>Gardener</span></div>')
+    )
+
+
+def nav_html(plant_count: int, now: datetime) -> str:
+    plural = "plant" if plant_count == 1 else "plants"
+    return (
+        card(NAV_R)
+        + blk(BRAND_R, '<div class="brand"><i>🌱</i>Smart Garden</div>')
+        + blk(SNAP_R, f'<div class="snap"><b>{now:%a, %d %b}</b>{plant_count} {plural} linked</div>')
+    )
+
+
+def health_html(p: dict) -> str:
+    s = health(p)
+    lab, col = status(s)
+    hdr = (
+        '<div class="hdr"><div><div class="h">Plant health</div><div class="sub">Pick a plant to inspect</div></div>'
+        '<div class="art art-plant"></div></div>'
+    )
+    row = (
+        f'<div class="hrow"><div class="ring" style="--s:{s};--c:{col}"><b>{s}</b><span>{lab}</span></div>'
+        f'<div class="stats"><div>Soil<b>{p["moisture"]:.0f}%</b></div>'
+        f'<div>Air<b>{T(p["temp"])}</b></div>'
+        f'<div>Humidity<b>{p["hum"]:.0f}%</b></div></div></div>'
+    )
+    return card(HEALTH_R) + blk(HEALTH_HDR_R, hdr) + blk(HEALTH_ROW_R, row)
+
+
+def prediction_view(pred: dict):
+    """-> (kind, title, subtitle) for the status pill."""
+    if not pred:
+        return "info", "⏳ Collecting data", "Waiting for enough sensor readings"
+    status_value = pred.get("status")
+    hours = pred.get("next_watering_in_hours")
+    friendly = pred.get("estimated_time_friendly")
+    sub = f"Estimated: {friendly}" if friendly else "Based on the recent drying trend"
+    if status_value == "WATER_NOW":
+        return "bad", "💧 Water now", sub
+    if status_value == "WATER_SOON":
+        return "warn", "💧 Water soon" + (f" — {hours:.1f} h" if hours is not None else ""), sub
+    if hours is not None:
+        if hours > 8:
+            return "good", f"🌱 Next watering in {hours:.1f} h", sub
+        if hours >= 4:
+            return "warn", f"💧 Next watering in {hours:.1f} h", sub
+        return "bad", f"🔴 Watering in {hours:.1f} h", sub
+    return "info", "🌱 Plant is stable", sub if friendly else "No watering needed right now"
+
+
+def water_html(pred: dict) -> str:
+    kind, title, sub = prediction_view(pred)
+    pred = pred or {}
+    fmt = lambda v, f: "—" if v is None else f.format(v)
+    confidence = pred.get("confidence")
+    if confidence is not None and confidence <= 1:
+        confidence *= 100
+    confidence_text = f"{confidence:.0f}%" if confidence is not None else "—"
+    mini = (
+        f'<div class="mini"><span>Moisture <b>{fmt(pred.get("current_moisture"), "{:.0f}%")}</b></span>'
+        f'<span>Drying <b>{fmt(pred.get("depletion_rate_per_hour"), "{:.2f}%/h")}</b></span>'
+        f'<span>Confidence <b>{confidence_text}</b></span></div>'
+    )
+    hdr = (
+        '<div class="hdr"><div><div class="h">Next watering</div><div class="sub">Predicted from moisture trend</div></div>'
+        '<div class="art art-can"></div></div>'
+    )
+    return (
+        card(WATER_R)
+        + blk(WATER_HDR_R, hdr)
+        + blk(PILL_R, f'<div class="pill {kind}"><b>{title}</b><span>{esc(sub)}</span></div>')
+        + blk(MINI_R, mini)
+        + blk(RULE_R, "", "rule")
+        + blk(SCHED_LBL_R, '<div class="lbl">Water daily at</div>')
+    )
+
+
+def weather_html(w: dict) -> str:
+    w = w or {}
+    if not w or not w.get("available", True):
+        body = '<div class="tip">⚠️ Live weather unavailable. Irrigation will use sensor-based decisions.</div>'
+        return card(WEATHER_R) + blk(WEATHER_HDR_R, '<div class="h">Weather forecast</div>') + blk(TIP_R, body)
+
+    rain_p = pick(w, "rain_probability", default=0) or 0
+    temp = pick(w, "temp", "temperature")
+    clouds = pick(w, "cloud_coverage", "clouds")
+    rain_mm = pick(w, "rainfall_mm", "rain_mm")
+    icon = "🌧️" if rain_p >= 60 else "⛅" if rain_p >= 30 else "☀️"
+    fmt = lambda value, suffix: f"{value:.0f}{suffix}" if isinstance(value, (int, float)) else "—"
+    current = f'<div class="wnow"><span>{icon}</span><b>{T(temp) if isinstance(temp, (int, float)) else "—"}</b></div>'
+    chips = (
+        f'<div class="chips"><div><b>{fmt(rain_p, "%")}</b>rain (24h)</div>'
+        f'<div><b>{fmt(clouds, "%")}</b>clouds</div>'
+        f'<div><b>{fmt(rain_mm, " mm")}</b>rainfall</div></div>'
+    )
+    tip = ("Rain likely in the next 24 h. Automatic irrigation may be skipped."
+           if rain_p > 50 else "Low rain chance. Irrigation follows soil moisture.")
+    city = esc(w.get("city", ""))
+    return (
+        card(WEATHER_R)
+        + blk(WEATHER_HDR_R, f'<div class="hdr"><div class="h">Weather forecast</div><div class="tag">LIVE</div></div>')
+        + blk(WNOW_R, current)
+        + blk(CHIPS_R, chips)
+        + blk(TIP_R, f'<div class="tip">💡 {tip}</div>')
+        + blk(WLIST_R, f'<div class="src">OpenWeather · {city} · refreshed by backend</div>')
+    )
+
+
+def pump_html(pump: dict, decision: dict) -> str:
+    pump = pump or {}
+    decision = decision or {}
+    if pump.get("active"):
+        state, sub, dot = "ON", "Watering now", "on"
+    elif pump.get("pending_manual"):
+        state, sub, dot = "QUEUED", "Waiting for device check-in", "q"
+    elif pump:
+        state, sub, dot = "OFF", (
+            f"Cooldown {pump.get('cooldown_minutes')} min"
+            if pump.get("cooldown_minutes") else "Idle"
+        ), ""
+    else:
+        state, sub, dot = "—", "Pump status unavailable", ""
+
+    last = "Never"
+    if pump.get("last_run"):
+        try:
+            last = pd.to_datetime(pump["last_run"], utc=True).tz_convert(
+                "Asia/Kolkata"
+            ).strftime("%d %b, %I:%M %p")
+        except (ValueError, TypeError):
+            last = str(pump["last_run"])
+
+    reason = esc((decision.get("reason") or pump.get("last_reason") or "")[:110])
+    decision_name = esc(decision.get("decision") or "No decisions yet")
+    conf = decision.get("confidence")
+    if conf is not None and conf <= 1:
+        conf *= 100
+    conf_text = f" · {conf:.0f}% confidence" if conf is not None else ""
+    status_body = (
+        f'<div class="pst"><div class="dot {dot}"></div><div>'
+        f'<b>{state}</b><small>{esc(sub)}</small></div></div>'
+    )
+    return (
+        card(PUMP_R)
+        + blk(PUMP_TITLE_R, '<div class="h">Pump status</div>')
+        + blk(PUMP_STATUS_R, status_body)
+        + blk(PUMP_VR1_R, "", "vr")
+        + blk(MODE_LBL_R, f'<div class="lbl">Last run</div><div class="dec"><b>{last}</b></div>')
+        + blk(PUMP_VR2_R, "", "vr")
+        + blk(THR_LBL_R, f'<div class="lbl">Latest decision</div><div class="dec"><b>{decision_name}</b>{conf_text}<small>{reason}</small></div>')
+    )
+
+
+def spark(vals: list, col: str) -> str:
+    if len(vals) < 2:   # no history yet: faint dashed baseline instead of an empty gap
+        return ('<svg viewBox="0 0 100 28" preserveAspectRatio="none"><line x1="0" y1="14" x2="100" y2="14" '
+                'stroke="#d5e6bd" stroke-width="2" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/></svg>')
+    lo, r = min(vals), (max(vals) - min(vals)) or 1
+    pts = " ".join(f"{i * 100 / (len(vals) - 1):.1f},{27 - (v - lo) / r * 25:.1f}" for i, v in enumerate(vals))
+    return (
+        f'<svg viewBox="0 0 100 28" preserveAspectRatio="none">'
+        f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="2" '
+        f'vector-effect="non-scaling-stroke"/></svg>'
+    )
+
+
+def sensors_html(p: dict, plant_name: str, live: bool, now: datetime) -> str:
+    hist = lambda k: [h.get(k, 0) for h in p["hist"]]
+    rows = [
+        ("Soil moisture", f'{p["moisture"]:.0f}', "%", p["mlo"] <= p["moisture"] <= p["mhi"], hist("moisture")),
+        ("Temperature", T(p["temp"])[:-2], T(p["temp"])[-2:], p["tlo"] <= p["temp"] <= p["thi"], hist("temperature")),
+        ("Humidity", f'{p["hum"]:.0f}', "%", 35 <= p["hum"] <= 85, hist("humidity")),
+        ("Light", f'{p["light"] / 1000:.1f}', "klux", p["light"] <= 45000, hist("light")),
+        ("Water tank", "100", "%", True, None),
+    ]
+    cells = ""
+    for label, val, unit, ok, series in rows:
+        col = "var(--good)" if ok else "var(--warn)"
+        extra = spark(series, col) if series is not None else '<div class="bar"><i style="width:100%;background:var(--good)"></i></div>'
+        cells += (
+            f'<div class="m"><div class="ml">{label}<i style="background:{col}"></i></div>'
+            f'<div class="mv">{val}<small>{unit}</small></div>{extra}</div>'
+        )
+    stamp = f"{p['emoji']} {esc(plant_name)} · {now:%H:%M:%S}" if live else "Updates paused"
+    body = f'<div class="sens"><div class="stt"><b>Live sensor readings</b><span>{stamp}</span></div>{cells}</div>'
+    return card(SENS_R) + blk(SENS_IN_R, body)
+
+
+# ==================================================
+# WIDGETS  (pinned by key, see WIDGETS above)
+# ==================================================
+def display_name() -> str:
     ss = st.session_state
-    with st.container(key="nav"):
-        html('<div class="brand"><i>🌱</i>Smart Garden</div>')
-        for n, icon in NAV:
-            if st.button(n, key=f"nav_{n}", icon=icon,
-                         type="primary" if ss.view == n else "secondary"):
-                go(n)
-        with st.container(key="snapwrap"):
-            html(f'<div class="snap"><b>{datetime.now():%a, %d %b}</b>{len(ss.plants)} plants linked</div>')
-        st.toggle("Live updates", key="live")
-        if st.button("Log out", key="logout", icon="🚪"):
-            logout()
+    if ss.get("_name_token") != ss.auth_token:      # ask the backend once per login
+        ss.user_name = get_current_user(ss.auth_token)
+        ss._name_token = ss.auth_token
+    name = (ss.get("user_name") or "Gardener").strip() or "Gardener"
+    return name[:1].upper() + name[1:]
 
 
-def profile() -> None:
-    name = get_current_user(st.session_state.auth_token)
+def profile_widget(name: str) -> None:
     with st.container(key="profile"):
-        html(f'<div class="greet">Hi, {name}</div>')
-        with st.popover(name[0].upper(), help="Your profile"):
-            html(f'<div class="avatar-name">{name}</div>')
+        with st.popover(name[:1].upper(), help="Your profile"):
+            html(f'<div class="avatar-name">{esc(name)}</div>')
             st.caption("Signed in to Smart Garden")
             if st.button("Settings", key="pf_settings", icon="⚙️"):
                 go("Settings")
@@ -423,187 +791,28 @@ def profile() -> None:
                 logout()
 
 
-def card_health() -> None:
+def nav_widgets() -> None:
     ss = st.session_state
-    with st.container(key="health"):
-        html('<div class="hdr"><div><div class="h">Plant health</div>'
-             '<div class="sub">Pick a plant to inspect</div></div>'
-             '<div class="art art-plant"></div></div>')
-        name = st.selectbox("Plant", list(ss.plants), key="sel_plant", index=None,
-                            placeholder="Select a plant", label_visibility="collapsed")
-        if name is None:
-            html('<div class="sub">Choose a plant to see its readings.</div>')
-            return
-        p = ss.plants[name]
-        if not p["has_data"]:
-            html('<div class="sub">Waiting for the first sensor reading…</div>')
-            return
-        s = health(p)
-        lab, col = status(s)
-        html(
-            f'<div class="hrow"><div class="ring" style="--s:{s};--c:{col}"><b>{s}</b><span>{lab}</span></div>'
-            f'<div class="stats"><div>Soil<b>{p["moisture"]:.0f}%</b></div>'
-            f'<div>Air<b>{T(p["temp"])}</b></div>'
-            f'<div>Humidity<b>{p["hum"]:.0f}%</b></div></div></div>'
-        )
+    for label, key, _icon in NAV:
+        if st.button(label, key=key, type="primary" if ss.view == label else "secondary"):
+            go(label)
+    st.toggle("Live updates", key="live")
+    if st.button("Log out", key="logout"):
+        logout()
 
 
-def card_water() -> None:
-    plant_id = current_plant_id()
-    pred = load_prediction(plant_id) if plant_id else {}
-
-    with st.container(key="water"):
-        html('<div class="wtop"><div class="h">Next watering</div><div class="art art-can"></div></div>')
-
-        if pred:
-            st_val = pred.get("status")
-            hours = pred.get("next_watering_in_hours")
-            when = pred.get("estimated_time_friendly")
-            if st_val == "WATER_NOW":
-                st.error("💧 Water now")
-            elif hours is None:
-                st.info("🌱 Moisture stable, no watering needed soon")
-            elif st_val == "WATER_SOON" or hours < 4:
-                st.error(f"🔴 In {hours:.1f} h" + (f" · {when}" if when else ""))
-            elif hours < 8:
-                st.warning(f"💧 In {hours:.1f} h" + (f" · {when}" if when else ""))
-            else:
-                st.success(f"🌱 In {hours:.1f} h" + (f" · {when}" if when else ""))
-
-            rate = pred.get("depletion_rate_per_hour")
-            conf = pred.get("confidence")
-            if conf is not None and conf <= 1:
-                conf *= 100
-            html(
-                '<div class="pmini">'
-                f'<div><b>{rate:.2f}%/h</b>drying rate</div>' if rate is not None else '<div><b>–</b>drying rate</div>'
-            )
-            html(f'<div><b>{conf:.0f}%</b>confidence</div></div>' if conf is not None
-                 else '<div><b>–</b>confidence</div></div>')
-        else:
-            st.info("Waiting for enough sensor data to predict watering.")
-
-        st.button("Water now", key="water_now", icon="💧", on_click=water_now)
-
-
-def card_weather() -> None:
-    w = load_weather()
-    with st.container(key="weather"):
-        html('<div class="h">Weather forecast</div>')
-        st.radio("Unit", ["°C", "°F"], key="unit", horizontal=True, label_visibility="collapsed")
-
-        if not w or not w.get("available", True):
-            html('<div class="tip">⚠️ Weather unavailable. Irrigation falls back to the sensor-only rule.</div>')
-            return
-
-        rain_p = pick(w, "rain_probability", default=0)
-        temp = pick(w, "temp", "temperature")
-        clouds = pick(w, "cloud_coverage", "clouds")
-        rain_mm = pick(w, "rainfall_mm", "rain_mm")
-        icon = "🌧️" if rain_p >= 60 else "⛅" if rain_p >= 30 else "☀️"
-        fmt = lambda v, suf: f"{v:.0f}{suf}" if isinstance(v, (int, float)) else "–"
-
-        html(
-            f'<div class="wnow"><span>{icon}</span><b>{T(temp) if isinstance(temp, (int, float)) else "–"}</b></div>'
-            f'<div class="chips"><div><b>{rain_p:.0f}%</b>rain (24h)</div>'
-            f'<div><b>{fmt(clouds, "%")}</b>clouds</div>'
-            f'<div><b>{fmt(rain_mm, " mm")}</b>rainfall</div></div>'
-        )
-        if rain_p > 50:
-            tip = "Rain likely in the next 24 h. Automatic watering will skip."
-        else:
-            tip = "Low rain chance. Automatic watering will follow soil moisture."
-        html(f'<div class="tip">💡 {tip}</div>')
-        html(f'<div class="src">Live · OpenWeather · {w.get("city", "Mumbai")} · updates every ~10 min</div>')
-
-
-def card_pump() -> None:
-    plant_id = current_plant_id()
-    pump = load_pump(plant_id) if plant_id else {}
-    dec = load_decision(plant_id) if plant_id else {}
-
-    if not pump:
-        state, sub, dot = "–", "Pump status unavailable", ""
-    elif pump.get("active"):
-        state, sub, dot = "ON", "Watering now", "on"
-    elif pump.get("pending_manual"):
-        state, sub, dot = "QUEUED", "Waiting for device check-in", "q"
-    else:
-        state = "OFF"
-        sub = f"Cooldown {pump['cooldown_minutes']} min" if pump.get("cooldown_minutes") else "Idle"
-        dot = ""
-
-    last = "Never"
-    if pump.get("last_run"):
-        last = (pd.to_datetime(pump["last_run"], utc=True)
-                .tz_convert("Asia/Kolkata").strftime("%d %b, %I:%M %p"))
-
-    with st.container(key="pump"):
-        art, a, b, c = st.columns([.75, 1.25, 1.15, 1.6], vertical_alignment="center")
-        with art:
-            html('<div class="art art-pump"></div>')
-        with a:
-            html('<div class="h">Pump status</div>'
-                 f'<div class="pst"><div class="dot {dot}"></div><div>'
-                 f'<b>{state}</b><small>{sub}</small></div></div>')
-        with b:
-            html(f'<div class="sub">Last run</div><div class="dec"><b>{last}</b>'
-                 f'<small>{(pump.get("last_reason") or "")[:40]}</small></div>'
-                 f'<div class="badge">Auto-irrigation ON · threshold {WATER_THRESHOLD}%</div>')
-        with c:
-            if dec.get("decision"):
-                conf = dec.get("confidence")
-                if conf is not None and conf <= 1:
-                    conf *= 100
-                conf_txt = f" · {conf:.0f}% confidence" if conf is not None else ""
-                reason = (dec.get("reason") or "")[:120]
-                html(f'<div class="sub">Last decision</div><div class="dec"><b>{dec["decision"]}</b>{conf_txt}'
-                     f'<small>{reason}</small></div>')
-            else:
-                html('<div class="sub">Last decision</div><div class="dec"><small>No decisions yet</small></div>')
-
-
-def spark(vals: list, col: str) -> str:
-    if len(vals) < 2:
-        return '<svg viewBox="0 0 100 28"></svg>'
-    lo, r = min(vals), (max(vals) - min(vals)) or 1
-    pts = " ".join(f"{i * 100 / (len(vals) - 1):.1f},{27 - (v - lo) / r * 25:.1f}"
-                   for i, v in enumerate(vals))
-    return (f'<svg viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="{pts}" '
-            f'fill="none" stroke="{col}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>')
-
-
-def card_sensors() -> None:
+def dashboard_widgets() -> None:
     ss = st.session_state
-    p = ss.plants[ss.sel_plant]
-    if not p["has_data"]:
-        with st.container(key="sensors"):
-            html('<div class="stt"><b>Live sensor readings</b><span>No readings yet. Is the device or simulator running?</span></div>')
-        return
+    st.selectbox("Plant", list(ss.plants), key="sel_plant", label_visibility="collapsed")
+    st.time_input("Water daily at", key="sched", step=300, label_visibility="collapsed")
+    st.toggle("Follow schedule", key="auto_sched")
+    st.button("Water now", key="water_now", icon="💧", on_click=water_now)
+    st.caption("Weather is provided by your backend location.")
+    st.radio("Unit", ["°C", "°F"], key="dash_unit", horizontal=True, label_visibility="collapsed")
 
-    series = lambda k: [float(h[k]) for h in p["hist"] if h.get(k) is not None]
-    last_time = str(p["last_ts"])[11:19] if p["last_ts"] else "–"
-    rain_txt = "Raining" if p["rain"] else "Dry"
-
-    rows = [
-        ("Soil moisture", f'{p["moisture"]:.0f}', "%", p["mlo"] <= p["moisture"] <= p["mhi"], series("moisture")),
-        ("Temperature", T(p["temp"])[:-2], T(p["temp"])[-2:], p["tlo"] <= p["temp"] <= p["thi"], series("temperature")),
-        ("Humidity", f'{p["hum"]:.0f}', "%", 35 <= p["hum"] <= 85, series("humidity")),
-        ("Rain sensor", rain_txt, "", not p["rain"], None),
-        ("Last reading", last_time, "", True, None),
-    ]
-    cells = ""
-    for label, val, unit, ok, s in rows:
-        col = "var(--good)" if ok else "var(--warn)"
-        extra = spark(s, col) if s is not None else ""
-        cells += (f'<div class="m"><div class="ml">{label}<i style="background:{col}"></i></div>'
-                  f'<div class="mv">{val}<small>{unit}</small></div>{extra}</div>')
-    stamp = f"{p['emoji']} {ss.sel_plant} · live" if ss.live else "Updates paused"
-    with st.container(key="sensors"):
-        html(f'<div class="sens"><div class="stt"><b>Live sensor readings</b><span>{stamp}</span></div>{cells}</div>')
 
 # ==================================================
-# PANEL (My plants only; other views are separate pages)
+# "MY PLANTS" PANEL
 # ==================================================
 def panel() -> None:
     ss = st.session_state
@@ -611,88 +820,99 @@ def panel() -> None:
         html('<div class="h">My plants</div>')
         if st.button("＋ Add a plant", key="add_plant"):
             st.switch_page("pages/5_Garden.py")
+        if not ss.plants:
+            html('<div class="sub">No plants yet. Add your first one to start monitoring.</div>')
+            return
         items = list(ss.plants.items())
         for i in range(0, len(items), 3):
             for col, (n, p) in zip(st.columns(3), items[i:i + 3]):
+                s = health(p)
+                lab, c = status(s)
                 with col:
-                    if p["has_data"]:
-                        s = health(p)
-                        lab, c = status(s)
-                        sub = f'<i style="color:{c}">{s}% · {lab}</i>'
-                    else:
-                        sub = '<i style="color:var(--mute)">No data yet</i>'
-                    html(f'<div class="pcard"><span>{p["emoji"]}</span>{n}{sub}</div>')
-                    st.button("Open on dashboard", key=f"open_{n}",
-                              on_click=open_plant, args=(n,), width="stretch")
+                    html(f'<div class="pcard"><span>{p["emoji"]}</span>{esc(n)}<i style="color:{c}">{s}% · {lab}</i></div>')
+                    st.button("Open on dashboard", key=f"open_{n}", on_click=open_plant, args=(n,), width="stretch")
+
 
 # ==================================================
-# SESSION STATE
+# INIT SESSION STATE
 # ==================================================
-def init_session_state():
+def init_session_state() -> None:
     ss = st.session_state
-    if ss.get("view") in PAGES:  # returned from a separate page
+
+    # If the user navigated back from an external page, reset view to Dashboard
+    if ss.get("view") in PAGE_MAP:
         ss.view = "Dashboard"
+
     ss.setdefault("view", "Dashboard")
     ss.setdefault("sel_plant", None)
-    ss.setdefault("unit", "°C")
+    ss.setdefault("sched", time(18, 30))
+    ss.setdefault("auto_sched", True)
+    ss.setdefault("dash_unit", "°C")
     ss.setdefault("live", True)
     ss.setdefault("plants", {})
 
+    # Load plants from backend if empty
     if not ss.plants:
         ss.plants = load_plants_from_backend()
-    if ss.get("sel_plant") not in ss.plants:
-        ss.sel_plant = None
+    if ss.plants and ss.sel_plant not in ss.plants:
+        ss.sel_plant = next(iter(ss.plants))
 
-# ==================================================
-# MAIN
-# ==================================================
+
 def refresh_selected_plant() -> None:
-    ss = st.session_state
     plant_id = current_plant_id()
     if not plant_id:
         return
     readings = load_sensor_history(plant_id, limit=60)
     if not readings:
         return
-    latest, p = readings[-1], ss.plants[ss.sel_plant]
-    p.update(
+    latest = readings[-1]
+    plant = st.session_state.plants[st.session_state.sel_plant]
+    plant.update(
         moisture=latest.get("moisture") or 0,
         temp=latest.get("temperature") or 0,
         hum=latest.get("humidity") or 0,
+        light=latest.get("light") or 0,
         rain=bool(latest.get("rain_detected")),
         last_ts=latest.get("timestamp"),
         has_data=True,
         hist=readings,
     )
 
-def dashboard_body() -> None:
-    ss = st.session_state
-    if ss.view == "My plants":
-        panel()
-        return
-    refresh_selected_plant()
-    card_health()
-    card_weather()
-    if ss.sel_plant:
-        card_water()
-        card_pump()
-        card_sensors()
-    else:
-        placeholder("water", "Next watering")
-        placeholder("pump", "Pump status")
-        placeholder("sensors", "Live sensor readings")
 
-
+# ==================================================
+# RUN PAGE
+# ==================================================
 init_session_state()
 inject_css()
-profile()
+
+ss = st.session_state
+name = display_name()
+now = datetime.now()
+show_cards = ss.view == "Dashboard" and bool(ss.plants)
+
+if show_cards:
+    refresh_selected_plant()
+    plant = ss.plants[ss.sel_plant]
+    pid = plant.get("id")
+    prediction = load_prediction(pid) if pid else {}
+    markup = (
+        header_html(name, now)
+        + nav_html(len(ss.plants), now)
+        + health_html(plant)
+        + water_html(prediction)
+        + weather_html(load_weather())
+        + pump_html(load_pump(pid), load_decision(pid))
+        + sensors_html(plant, ss.sel_plant, ss.live, now)
+    )
+else:
+    markup = header_html(name, now) + nav_html(len(ss.plants), now)
+
 with st.container(key="stage"):
-    nav()
-    if not st.session_state.plants:
-        with st.container(key="panel"):
-            html('<div class="h">No plants yet</div>')
-            if st.button("＋ Add your first plant", key="add_first"):
-                st.switch_page("pages/5_Garden.py")
+    with st.container(key="shells"):
+        html(markup)
+    profile_widget(name)
+    nav_widgets()
+    if show_cards:
+        dashboard_widgets()
     else:
-        run_every = 10 if st.session_state.live else None
-        st.fragment(run_every=run_every)(dashboard_body)()
+        panel()
