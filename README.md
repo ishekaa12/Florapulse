@@ -1,404 +1,183 @@
-# FloraPulse - Smart IoT Plant Irrigation System
-
-An intelligent, predictive watering system that monitors plants in real-time and automates irrigation based on environmental conditions, soil moisture trends, and weather forecasts.
-
-## Overview
-
-FloraPulse integrates embedded systems, IoT sensors, cloud analytics, and weather intelligence to deliver an efficient, affordable plant care solution. The system uses predictive modeling to estimate watering requirements before soil reaches critical dryness, integrates weather data to avoid unnecessary irrigation during rainfall, and provides a comprehensive dashboard for real-time monitoring and historical analysis.
-
-### Key Features
-
-- Real-time sensor monitoring (soil moisture, temperature, humidity, rainfall detection)
-- Predictive watering based on historical soil depletion rates
-- Weather-aware irrigation (prevents watering when rain is forecasted)
-- Multi-plant support with individual health tracking
-- Interactive dashboard with analytics and sensor visualization
-- REST API for extensibility and mobile integration
-- Database persistence for historical analysis
-
-## Technology Stack
-
-### Frontend
-- **Framework**: Streamlit (Python)
-- **Data Processing**: Pandas, NumPy
-- **Visualization**: Plotly, Matplotlib
-- **HTTP Client**: Requests
-
-### Backend
-- **Framework**: FastAPI (Python)
-- **Server**: Uvicorn
-- **Database**: SQLite with SQLAlchemy ORM
-- **External APIs**: OpenWeather API
-- **Async Support**: Built-in async/await
-
-### Hardware
-- **Microcontroller**: ESP32
-- **Sensors**: DHT22 (temperature/humidity), Capacitive soil moisture sensor, Rain sensor
-- **Actuator**: DC water pump with relay module
-- **Connectivity**: WiFi (built-in)
-- **Communication**: HTTP requests to FastAPI backend
-
-### DevOps
-- **Version Control**: Git
-- **Environment Management**: Python venv
-
-## System Architecture
-
+# FloraPulse: IoT Smart Plant Irrigation System
+ 
+FloraPulse is an IoT-based smart irrigation system. An ESP32 reads soil moisture, temperature, humidity and rain, and sends the data over Wi-Fi to a FastAPI backend. The backend stores every reading in SQLite, decides whether the plant needs water using soil moisture and the OpenWeather forecast, and sends a pump command back to the device. A Streamlit dashboard shows live and historical data, the pump status and the reasoning behind each decision.
+ 
+Built as a third-semester mini project at Usha Mittal Institute of Technology, SNDT Women's University, Mumbai.
+ 
+## How it works
+ 
 ```
-ESP32 (Hardware Layer)
-    |
-    v
-WiFi Network
-    |
-    v
-FastAPI Backend (http://localhost:8000)
-    |
-    +-- SQLite Database (sensor_data, watering_history, plant_profiles)
-    |
-    +-- OpenWeather API Integration
-    |
-    v
-Streamlit Frontend (http://localhost:8501)
-    |
-    +-- Dashboard (real-time plant status)
-    +-- Sensors (historical trends by plant)
-    +-- Weather (7-day forecast)
-    +-- Analytics (plant health aggregation)
-    +-- Garden (plant management)
-    +-- Profile (user settings)
-    +-- Admin (system configuration)
+ESP32 --POST reading (X-Device-Key)--> FastAPI --> SQLite
+                                         |  checks cached OpenWeather forecast
+                                         |  applies the irrigation rule
+ESP32 <--{"pump":{"action":"ON","duration_seconds":10}}--
+Streamlit dashboard <--REST + JWT--> FastAPI
 ```
 
-## Project Structure
 
+<h2 align="center">My Project</h2>
+
+<p align="center">
+    <img width="335" height="200" alt="image" src="https://github.com/user-attachments/assets/df00eb06-d78a-4e33-b3fa-50bb7f1a537d" />
+</p>
+
+ 
+1. **Sense:** capacitive soil-moisture sensor, DHT22 and a rain sensor, sampled by the ESP32 and posted every 30 seconds. Rain is sampled every second and an early post is sent when it starts.
+2. **Decide:** water only if soil moisture is below 35%, the rain sensor is dry, and the 24-hour forecast shows no more than 50% chance of rain. Every decision is stored with its reason, including the forecast percentage.
+3. **Act:** the backend returns a pump command in the response. The firmware runs the relay and enforces its own limits (maximum run time and a cooldown). The backend also applies a cooldown between runs.
+4. **Predict:** the drying rate over the last 24 hours gives an estimate of the time until the next watering.
+5. **Display:** live readings, weather, pump status, last decision, analytics and an admin view.
+A manual **Water now** button on the dashboard queues a command that is delivered on the device's next check-in (up to 30 seconds), subject to the cooldown.
+ 
+## Features
+ 
+- Real-time soil moisture, temperature, humidity and rain monitoring
+- Weather-aware automatic irrigation (OpenWeather forecast, cached for 10 minutes)
+- Backend-issued pump commands with cooldown and device-side safety limits
+- Predicted time until next watering from the soil drying rate
+- Multi-plant support, JWT login, and role-based admin pages
+- Device authentication with an `X-Device-Key` header
+- Dashboard, sensor status, and analytics built from real stored data
+- ESP32 simulator for testing without hardware
+## Technology stack
+ 
+| Layer | Technology |
+|---|---|
+| Firmware | ESP32, Arduino C++, DHT22, capacitive soil sensor, rain sensor, relay and DC pump |
+| Backend | FastAPI, Uvicorn, SQLAlchemy, SQLite, Pydantic, python-jose (JWT) |
+| External API | OpenWeather (5-day / 3-hour forecast) |
+| Frontend | Streamlit, Plotly, pandas, requests |
+| Language | Python 3.10+ |
+ 
+## Project structure
+ 
 ```
 IOT-Based-Smart-Irrigation-System/
-├── app.py                          # Streamlit entry point
-├── requirements.txt                # Frontend dependencies
-├── config.toml                     # Streamlit configuration
-├── assets/                         # Images, backgrounds, UI assets
-├── pages/                          # Streamlit multi-page app
-│   ├── 1_Welcome.py               # Onboarding page
-│   ├── 2_Login.py                 # Authentication
-│   ├── 3_Sign_Up.py               # Account creation
-│   ├── 4_Create.py                # Plant profile creation
-│   ├── 5_Garden.py                # Garden management
-│   ├── 6_Dashboard.py             # Main monitoring dashboard
-│   ├── 7_About.py                 # Project information
-│   ├── 8_Profile.py               # User profile
-│   ├── 9_Sensors.py               # Sensor data visualization
-│   ├── 10_Settings.py             # System settings
-│   ├── 11_Analytics.py            # Historical analysis
-│   ├── 12_Weather.py              # Weather integration
-│   └── 9_Admin.py                 # Admin controls
-│
-├── florapulse-backend/             # FastAPI backend service
-│   ├── main.py                    # FastAPI application entry
-│   ├── requirements.txt           # Backend dependencies
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── config.py              # Configuration management
-│   │   ├── database.py            # Database connection & setup
-│   │   ├── database_models.py     # SQLAlchemy ORM models
-│   │   ├── models.py              # Pydantic request/response models
-│   │   ├── main.py                # Route handlers
-│   │   ├── services/
-│   │   │   ├── irrigation_engine.py    # Watering logic
-│   │   │   ├── prediction_engine.py    # Trend analysis & forecasting
-│   │   │   └── weather_service.py      # OpenWeather API wrapper
-│   │   └── utils/
-│   │       ├── auth.py            # Authentication helpers
-│   │       └── validators.py      # Input validation
-│   ├── simulate_esp32.py          # ESP32 data simulator
-│   ├── simulate_esp32_new_plant.py # New plant simulation
-│   └── test_db.py                 # Database testing utilities
-│
-└── hardware/                       # ESP32 firmware (future)
-    └── esp32_main.ino             # Sensor reading & WiFi communication
+├── app.py                      Streamlit entry point
+├── requirements.txt            Frontend dependencies
+├── assets/                     Images and backgrounds
+├── pages/                      Streamlit pages
+│   ├── 1_Welcome.py  2_Login.py  3_Sign_Up.py  4_Create.py  5_Garden.py
+│   ├── 6_Dashboard.py          Live monitoring dashboard
+│   ├── 7_About.py  8_Profile.py  9_Admin.py  9_Sensors.py
+│   └── 10_Settings.py  11_Analytics.py  12_Weather.py
+├── florapulse-backend/
+│   ├── .env.example            Copy to .env and fill in
+│   ├── requirements.txt
+│   ├── simulate_esp32.py       Sensor simulator
+│   └── app/
+│       ├── main.py             API routes
+│       ├── config.py  database.py  database_models.py  models.py
+│       ├── services/
+│       │   ├── irrigation_engine.py   Watering rule
+│       │   ├── prediction_engine.py   Drying rate and next-watering estimate
+│       │   ├── weather_service.py     OpenWeather client with cache
+│       │   └── pump_service.py        Pump commands, cooldown, manual queue
+│       └── utils/  auth.py  validators.py
+└── hardware/
+    ├── florapulse_firmware.ino
+    └── config.example.h        Wi-Fi, server URL, device key (copy to config.h)
 ```
-
-## Installation & Setup
-
+ 
+## Setup
+ 
 ### Prerequisites
-- Python 3.10+
-- pip
-- Git
-
-### Frontend Setup
-
+Python 3.10+, Git, Arduino IDE (for the firmware).
+ 
+### 1. Backend
 ```bash
-# Clone repository
-git clone <repo-url>
-cd IOT-Based-Smart-Irrigation-System
-
-# Create virtual environment
-python -m venv venv-frontend
-source venv-frontend/bin/activate  # Mac/Linux
-# or
-venv-frontend\Scripts\activate     # Windows
-
-# Install dependencies
+cd florapulse-backend
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# Run Streamlit app
+cp .env.example .env        # then set the values below
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+ 
+`.env` values:
+```
+OPENWEATHER_API_KEY=your_openweather_key
+DEVICE_API_KEY=a-long-random-string
+```
+Generate a device key with `python3 -c "import secrets; print(secrets.token_hex(16))"`. On first start the backend creates the database and seeds an admin account, a demo account, a demo plant and the sensor `ESP32_DEMO_001`. Change the seeded passwords before exposing the server beyond your own machine.
+ 
+API docs: http://localhost:8000/docs
+ 
+### 2. Frontend
+```bash
+# from the project root
+python -m venv venv-frontend && source venv-frontend/bin/activate
+pip install -r requirements.txt
 streamlit run app.py
 ```
-
-Access frontend at: `http://localhost:8501`
-
-### Backend Setup
-
+Open http://localhost:8501 and log in with the seeded demo account.
+ 
+### 3. Sensor data: simulator or real device
+ 
+**Simulator** (no hardware needed), from `florapulse-backend`:
 ```bash
-# Navigate to backend directory
-cd florapulse-backend
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Mac/Linux
-# or
-venv\Scripts\activate     # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run FastAPI server
-python main.py
-# or
-uvicorn app.main:app --reload --port 8000
+python simulate_esp32.py                         # the demo sensor
+python simulate_esp32.py ESP32_DEMO_001 MY_ID_2  # several sensors
 ```
-
-Access backend at: `http://localhost:8000`
-API documentation at: `http://localhost:8000/docs`
-
-### Hardware Setup
-
-1. Install Arduino IDE
-2. Install ESP32 board support
-3. Configure WiFi credentials in `wifi_config.h`
-4. Upload `esp32_main.ino` to ESP32
-5. ESP32 will connect to backend and stream sensor data
-
-## API Endpoints
-
-### Authentication
-- `POST /auth/login` - User login
-- `POST /auth/signup` - User registration
-- `POST /auth/logout` - User logout
-
-### Plants
-- `GET /api/plants` - List all plants
-- `POST /api/plants` - Create new plant
-- `GET /api/plants/{plant_id}` - Get plant details
-- `PUT /api/plants/{plant_id}` - Update plant
-- `DELETE /api/plants/{plant_id}` - Delete plant
-
-### Sensors
-- `POST /api/sensors` - Log sensor reading (from ESP32)
-- `GET /api/sensors/{plant_id}` - Get sensor history
-- `GET /api/sensors/{plant_id}/latest` - Get latest reading
-
-### Watering
-- `GET /api/watering/history` - Watering logs
-- `GET /api/watering/prediction/{plant_id}` - Next watering estimate
-- `POST /api/watering/manual` - Trigger manual watering
-
-### Weather
-- `GET /api/weather/{city}` - Current weather
-- `GET /api/weather/{city}/forecast` - 7-day forecast
-
-## Data Models
-
-### Plant
-```python
-{
-    "id": "uuid",
-    "name": "Monstera Deliciosa",
-    "emoji": "🌿",
-    "location": "Living Room",
-    "soil_type": "potting_mix",
-    "watering_interval": 3,  # days
-    "last_watered": "2026-09-27T14:30:00",
-    "health_score": 85,
-    "moisture": 65.5,
-    "temperature": 22.3,
-    "humidity": 58.2,
-    "light": 1200
-}
+ 
+**ESP32:**
+1. Install the ESP32 board package and the libraries *DHT sensor library*, *Adafruit Unified Sensor* and *ArduinoJson* (v7).
+2. Copy `config.example.h` to `config.h` and set your Wi-Fi, your computer's LAN IP in the server URL, and the same device key as in `.env`. Do not commit `config.h`.
+3. Calibrate the soil sensor: record the raw reading in open air (dry) and in water (wet) and set them in the firmware.
+4. The computer and the ESP32 must be on the same network. Phone hotspots work, but the ESP32 needs a 2.4 GHz network.
+5. The sensor ID in the firmware must match the sensor ID entered when adding the plant.
+Do not run the simulator and the real device for the same sensor ID at the same time.
+ 
+## API overview
+ 
+| Area | Endpoints |
+|---|---|
+| Auth | `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me` |
+| Plants | `POST /api/plants/create`, `GET /api/plants/my-plants`, `GET /api/plants/{id}` |
+| Sensors | `GET /api/sensors/my-sensors`, `POST /api/sensors/register`, `GET /api/sensors/{sensor_id}/status` |
+| Sensor data | `POST /api/sensor-data/upload` (device key), `GET /api/sensor-data/history` |
+| Prediction | `GET /api/plants/{id}/depletion-rate`, `GET /api/plants/{id}/next-watering-prediction` |
+| Pump | `POST /api/plants/{id}/water-now`, `GET /api/plants/{id}/pump-status` |
+| Decisions | `GET /api/plants/{id}/latest-decision`, `GET /api/plants/{id}/activity` |
+| Weather | `GET /api/weather/current` |
+| Other | `POST /api/irrigation/decide`, `GET /api/dashboard/live`, `GET /health` |
+| Admin | `GET /api/admin/users`, `/plants`, `/sensors`, `/readings` |
+ 
+Upload request body:
+```json
+{"sensor_id": "ESP32_DEMO_001", "moisture": 42.5, "temperature": 27.1,
+ "humidity": 61.0, "rain_detected": false}
 ```
-
-### Sensor Reading
-```python
-{
-    "timestamp": "2026-09-27T15:45:00",
-    "plant_id": "uuid",
-    "soil_moisture": 65.5,
-    "temperature": 22.3,
-    "humidity": 58.2,
-    "light_intensity": 1200,
-    "rainfall_detected": false
-}
-```
-
-## Workflows
-
-### Real-Time Monitoring
-1. ESP32 reads sensors every 30 seconds
-2. Data sent to backend via HTTP POST
-3. Backend stores in SQLite
-4. Frontend fetches via REST API
-5. Dashboard updates with real-time values
-
-### Predictive Watering
-1. Backend analyzes 7-day soil moisture history
-2. Calculates depletion rate (% per day)
-3. Estimates days until critical threshold
-4. Checks weather forecast (rain within 24h?)
-5. Schedules irrigation if needed
-6. Sends signal to relay module
-
-### Weather Integration
-1. Backend queries OpenWeather API every 6 hours
-2. Stores forecast in cache
-3. Checks rainfall probability before watering
-4. Frontend displays 7-day forecast with precipitation
-
-## Development Workflow
-
-### Git Strategy
-- `main` - Production/stable code
-- `backend-dev` - Backend development
-- `frontend-dev` - Frontend development (archived, merged to main)
-
-### Branch Conventions
-```bash
-# Create feature branch
-git checkout -b feature/feature-name
-
-# Commit frequently
-git commit -m "Component: Specific change description"
-
-# Push and create pull request
-git push origin feature/feature-name
-```
-
-### Commit Message Format
-```
-Frontend: Add sensor visualization charts
-Backend: Implement predictive watering algorithm
-Hardware: Fix DHT22 sensor reading timeout
-Database: Add watering_history table migration
-```
-
-## Testing
-
-### Backend Testing
-```bash
-cd florapulse-backend
-python test_db.py        # Database tests
-python simulate_esp32.py # Sensor data simulation
-```
-
-### Frontend Testing
-```bash
-# Manual testing in Streamlit app
-# Test login/signup flow
-# Test plant creation
-# Test dashboard navigation
-# Verify API connectivity
-```
-
-## Performance & Scalability
-
-### Current Metrics
-- Sensor readings: 2 per minute per plant
-- Dashboard refresh: 5-second intervals
-- Forecast cache: 6-hour update cycle
-- Database: SQLite (suitable for <1000 plants)
-
-### Future Optimizations
-- PostgreSQL for horizontal scaling
-- Redis caching for API responses
-- Background job queue (Celery) for predictions
-- Mobile app (React Native)
-- Cloud deployment (AWS/GCP)
-
-## Hardware Specifications
-
-### ESP32 Configuration
-- CPU: Dual-core 240 MHz
-- RAM: 320 KB
-- WiFi: 802.11 b/g/n
-- GPIO: 36 digital pins
-
-### Sensor Specs
-- DHT22: Temperature (-40 to 80°C), Humidity (0-100%)
-- Soil Moisture: Capacitive (0-100%)
-- Rain Sensor: Digital trigger + analog
-- Light Sensor: Lux meter (0-65535)
-
-### Power
-- Operating: 5V, 1A
-- Relay: 12V, rated for 16A @ 250V AC
-
-## Team & Contributions
-
-- **Backend & Database**: Database architecture, API endpoints, weather integration
-- **Frontend & Dashboard**: Multi-page UI, real-time visualization, user authentication
-- **Hardware & Firmware**: ESP32 integration, sensor calibration, WiFi communication
-
-## Deployment
-
-### Local Development
-```bash
-# Terminal 1: Backend
-cd florapulse-backend
-source venv/bin/activate
-python main.py
-
-# Terminal 2: Frontend
-source venv-frontend/bin/activate
-streamlit run app.py
-
-# Access: http://localhost:8501
-```
-
-### Production Deployment (Future)
-- Backend: Docker container on AWS EC2
-- Frontend: Streamlit Cloud or Heroku
-- Database: AWS RDS (PostgreSQL)
-- Hardware: Raspberry Pi as bridge or cloud-connected ESP32
-
-## Known Limitations
-
-- SQLite limited to single-user access (upgrade to PostgreSQL for multi-user)
-- Streamlit session state resets on page refresh (implement persistent state with backend)
-- ESP32 WiFi range limited to ~100m
-- One relay module controls one pump (multi-zone requires relay array)
-
-## Future Enhancements
-
-1. Machine learning for plant-specific watering patterns
-2. Soil nutrient analysis via API integration
-3. Multi-zone irrigation system
-4. Mobile app (iOS/Android)
-5. Greenhouse monitoring suite
-6. CO2 and soil pH sensors
-7. User community & plant database
-8. Integration with smart home systems (Alexa, Google Home)
-
-## Support & Documentation
-
-- API Docs: `http://localhost:8000/docs` (when backend running)
-- Streamlit Docs: https://docs.streamlit.io
-- FastAPI Docs: https://fastapi.tiangolo.com
-- ESP32 Docs: https://docs.espressif.com/projects/esp-idf/
-
+Response includes `decision` and `pump: {action, duration_seconds}`.
+ 
+## Notes and limitations
+ 
+- Readings are stored in local time and pump events in UTC.
+- The pending "Water now" queue is held in memory and is cleared when the backend restarts.
+- Pump runtime is commanded by the backend, but the backend cannot confirm the relay actually ran.
+- Prediction accuracy has not been formally measured. The drying-rate method discards rates above 10% per hour as outliers.
+- The Water vs. Energy and Cost Analysis charts on the Analytics page use sample data and are labelled as such, because the system has no flow or energy meter.
+- Settings thresholds are saved per user but do not yet change the backend, which uses a fixed 35% threshold.
+- Plant photos are accepted by the form but not yet stored.
+- Language and time zone settings are stored but not applied.
+- SQLite and a single backend process are suited to a demo or small deployment. Passwords use salted SHA-256; bcrypt or argon2 would be preferable beyond a college project.
+- Do not commit `.env`, `*.db`, `settings_*.json` or `config.h`.
+## Future work
+ 
+- Persist the manual-command queue, and report relay state back from the device
+- Make thresholds configurable per plant from the dashboard
+- Store plant photos
+- Measure prediction accuracy over repeated dry-down cycles
+- Per-device keys, HTTPS and bcrypt for deployment
+- Multi-zone irrigation and more sensor types
+## Team
+ 
+| Name | Contribution |
+|---|---|
+| **Isheka** | Backend (API, database, irrigation and prediction logic, weather integration, pump commands) and hardware (ESP32 firmware and integration) |
+| **Shreeya** | Frontend (Streamlit pages, UI design and styling) |
+| **Pranjali** | Frontend and hardware (sensor wiring and assembly) |
+ 
 ## License
-
-Educational project - SNDT Women's University, Mumbai
-
----
-
-**Last Updated**: September 30, 2026
-**Version**: 1.0.0
-**Status**: Development Complete, Testing Phase
+ 
+Educational project: Usha Mittal Institute of Technology, SNDT Women's University, Mumbai.
+ 
